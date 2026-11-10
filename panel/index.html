@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DispWatter - Panel de Control & Gestión de Bebederos</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Barra Superior -->
+    <header class="navbar">
+        <div class="nav-brand">
+            <div class="logo-icon">💧</div>
+            <div class="brand-text">
+                <h1>DispWatter</h1>
+                <span class="badge">IoT System</span>
+            </div>
+        </div>
+
+        <div class="nav-center">
+            <div class="device-selector-wrapper">
+                <label for="deviceSelect">Dispositivo:</label>
+                <select id="deviceSelect" class="select-input">
+                    <!-- Cargados dinámicamente -->
+                </select>
+                <span id="connStatusBadge" class="status-badge online">Online</span>
+            </div>
+        </div>
+
+        <div class="nav-actions">
+            <button id="btnOpenClaimModal" class="btn btn-primary">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                Vincular Dispositivo
+            </button>
+            <div class="user-pill">
+                <span class="user-avatar">👤</span>
+                <span class="user-name">Propietario</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Contenedor Principal -->
+    <main class="dashboard-container">
+        <!-- Fila Superior: Monitor de Tanque y Estado Rápido -->
+        <section class="dashboard-grid top-grid">
+            <!-- Tarjeta 1: Tanque Visual en Vivo -->
+            <div class="card tank-card">
+                <div class="card-header">
+                    <h2>Nivel del Bebedero en Vivo</h2>
+                    <span class="live-indicator"><span class="pulse-dot"></span> Transmisión continua</span>
+                </div>
+                <div class="tank-visualization-wrapper">
+                    <div class="tank-outer">
+                        <div class="tank-ruler">
+                            <span>100%</span>
+                            <span>75%</span>
+                            <span>50%</span>
+                            <span>25%</span>
+                            <span>0%</span>
+                        </div>
+                        <div class="tank-body">
+                            <div class="water-container" id="waterContainer">
+                                <div class="wave wave-back"></div>
+                                <div class="wave wave-front"></div>
+                                <div class="water-fill" id="waterFill" style="height: 65%;"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tank-metrics">
+                        <div class="metric-main">
+                            <span class="metric-value" id="waterPercentage">65.0</span>
+                            <span class="metric-unit">%</span>
+                        </div>
+                        <div class="metric-sub">
+                            <span class="label">Volumen Calculado:</span>
+                            <span class="sub-value" id="currentLiters">32.5</span> / <span id="maxLiters">50</span> Litros
+                        </div>
+                        <div class="metric-detail-grid">
+                            <div class="detail-box">
+                                <span class="detail-label">Distancia Sensor</span>
+                                <span class="detail-value" id="currentDistanceMm">380 mm</span>
+                            </div>
+                            <div class="detail-box">
+                                <span class="detail-label">Espejo Máximo</span>
+                                <span class="detail-value" id="mirrorDistanceMm">100 mm</span>
+                            </div>
+                            <div class="detail-box">
+                                <span class="detail-label">Fondo del Tanque</span>
+                                <span class="detail-value" id="bottomDistanceMm">900 mm</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tarjeta 2: Actuadores y Control de Relé (Bomba) -->
+            <div class="card control-card">
+                <div class="card-header">
+                    <h2>Control de Bomba / Relé</h2>
+                    <span id="relayStatusBadge" class="status-badge-lg off">Bomba Inactiva</span>
+                </div>
+
+                <div class="relay-panel">
+                    <div class="relay-state-visual">
+                        <div class="pump-icon-circle" id="pumpIcon">
+                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                            </svg>
+                        </div>
+                        <div class="pump-info">
+                            <h3 id="relayModeText">Modo Automático</h3>
+                            <p id="relayActionDesc">El relé encenderá cuando el nivel baje del umbral mínimo.</p>
+                        </div>
+                    </div>
+
+                    <div class="control-row">
+                        <span>Forzar Estado Manual:</span>
+                        <div class="btn-group">
+                            <button id="btnRelayOn" class="btn btn-outline-success">Encender</button>
+                            <button id="btnRelayOff" class="btn btn-outline-danger">Apagar</button>
+                        </div>
+                    </div>
+
+                    <hr class="divider">
+
+                    <!-- Control LCD en Vivo -->
+                    <div class="lcd-preview-section">
+                        <h3>Mensaje en Pantalla LCD (16x2)</h3>
+                        <div class="lcd-screen" id="lcdScreen">
+                            <div class="lcd-line" id="lcdLine0">Nivel: 65%  32L</div>
+                            <div class="lcd-line" id="lcdLine1">Bomba: APAGADA</div>
+                        </div>
+                        <div class="lcd-inputs">
+                            <input type="text" id="customLcd0" maxlength="16" placeholder="Línea 0 (máx 16 car)" class="text-input">
+                            <input type="text" id="customLcd1" maxlength="16" placeholder="Línea 1 (máx 16 car)" class="text-input">
+                            <button id="btnSendLcd" class="btn btn-secondary">Actualizar LCD</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Fila Inferior: Configuración Completa del Tanque y Dispositivo -->
+        <section class="card config-card">
+            <div class="card-header">
+                <div>
+                    <h2>Parámetros de Calibración y Riego</h2>
+                    <p class="subtitle">Ajusta los milímetros geométricos y reglas automáticas para este bebedero</p>
+                </div>
+                <button id="btnSaveConfig" class="btn btn-success">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                    Guardar Configuración
+                </button>
+            </div>
+
+            <form id="tankConfigForm" class="config-grid">
+                <!-- Columna 1: Geometría -->
+                <div class="config-group">
+                    <h3>📐 Geometría del Tanque</h3>
+                    
+                    <div class="form-item">
+                        <label for="cfgCapacity">Capacidad Total del Contenedor (Litros):</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="cfgCapacity" value="50" min="1" step="0.5" required>
+                            <span class="unit">L</span>
+                        </div>
+                        <small>Volumen útil con el tanque lleno.</small>
+                    </div>
+
+                    <div class="form-item">
+                        <label for="cfgBottomDist">Distancia al Fondo Vacío (D<sub>fondo</sub>):</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="cfgBottomDist" value="900" min="50" step="1" required>
+                            <span class="unit">mm</span>
+                        </div>
+                        <small>Distancia desde el sensor hasta la base cuando no hay agua.</small>
+                    </div>
+
+                    <div class="form-item">
+                        <label for="cfgMirrorDist">Distancia al Espejo Máximo (D<sub>espejo</sub>):</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="cfgMirrorDist" value="100" min="20" step="1" required>
+                            <span class="unit">mm</span>
+                        </div>
+                        <small>Distancia de seguridad para evitar que el agua toque el sensor.</small>
+                    </div>
+                </div>
+
+                <!-- Columna 2: Reglas de Automatización -->
+                <div class="config-group">
+                    <h3>⚡ Reglas de Automatización de Riego/Llenado</h3>
+
+                    <div class="form-item switch-item">
+                        <label for="cfgAutoRefill">Llenado / Riego Automático Activado:</label>
+                        <label class="switch">
+                            <input type="checkbox" id="cfgAutoRefill" checked>
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+
+                    <div class="form-item">
+                        <label for="cfgMinLevel">Umbral Mínimo de Activación (Bomba ON):</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="cfgMinLevel" value="25" min="5" max="90" required>
+                            <span class="unit">%</span>
+                        </div>
+                        <small>Cuando el agua baje de este porcentaje, el relé se activará.</small>
+                    </div>
+
+                    <div class="form-item">
+                        <label for="cfgMaxLevel">Umbral Máximo de Corte (Bomba OFF):</label>
+                        <div class="input-with-unit">
+                            <input type="number" id="cfgMaxLevel" value="90" min="20" max="100" required>
+                            <span class="unit">%</span>
+                        </div>
+                        <small>Al alcanzar este nivel, el relé se apagará automáticamente.</small>
+                    </div>
+                </div>
+
+                <!-- Columna 3: Información de Seguridad del Dispositivo -->
+                <div class="config-group">
+                    <h3>🔒 Identidad del Hardware</h3>
+                    
+                    <div class="form-item">
+                        <label>ID del Dispositivo:</label>
+                        <input type="text" id="infoDeviceId" class="mono-input" readonly value="WATTER-001">
+                    </div>
+
+                    <div class="form-item">
+                        <label>Hash de Credencial (SHA-256):</label>
+                        <input type="text" id="infoDeviceHash" class="mono-input hash-text" readonly value="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855">
+                        <small>Clave criptográfica verificada por el backend.</small>
+                    </div>
+
+                    <div class="form-item">
+                        <label>Estado de Posesión:</label>
+                        <span class="badge-claimed" id="claimStatusText">✓ Reclamado por ti</span>
+                    </div>
+                </div>
+            </form>
+        </section>
+    </main>
+
+    <!-- Modal para Tomar Posesión / Vincular Dispositivo -->
+    <div class="modal-backdrop" id="claimModal" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🔐</span>
+                    <h2>Tomar Posesión de un Dispositivo</h2>
+                </div>
+                <button class="btn-close" id="btnCloseClaimModal">&times;</button>
+            </div>
+            
+            <form id="claimDeviceForm">
+                <p class="modal-intro">
+                    Ingresa el ID y la Contraseña configurada en el firmware del ESP32. 
+                    El backend validará el hash criptográfico y asignará este dispositivo a tu cuenta.
+                </p>
+
+                <div class="form-item">
+                    <label for="claimDeviceId">ID del Dispositivo (Flasheado en ESP32):</label>
+                    <input type="text" id="claimDeviceId" placeholder="Ej: WATTER-001" required class="mono-input">
+                </div>
+
+                <div class="form-item">
+                    <label for="claimDevicePass">Contraseña del Dispositivo:</label>
+                    <input type="password" id="claimDevicePass" placeholder="Clave secreta asignada" required>
+                </div>
+
+                <div class="form-item">
+                    <label for="claimDeviceName">Nombre Personalizado para el Panel:</label>
+                    <input type="text" id="claimDeviceName" placeholder="Ej: Bebedero Huerto Principal" required>
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" id="btnCancelClaim">Cancelar</button>
+                    <button type="submit" class="btn btn-primary" id="btnSubmitClaim">Vincular y Reclamar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Notificaciones Flotantes (Toasts) -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

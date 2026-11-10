@@ -1,0 +1,1 @@
+Vamos a crear sistema de medicion de un bebedero de agua donde podremos medir los porcentajes de agua con un sensor ultrasonico (el hardware solo indicara la distancia en milimetros) y el backend recibira todos los datos y podra indicar en pantalla que mostar y si vamos a encender o apagar un rele

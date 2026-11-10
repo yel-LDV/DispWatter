@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+backend/.venv/
+.venv/
+env/
+venv/
+
+# Base de datos local y backups
+backend/*.db
+backend/*.db-journal
+backend/backups/
+*.db
+
+# Logs y PIDs
+logs/
+.pids/
+*.log
+
+# Entorno y credenciales locales
+.env.local
+
+# Hardware (PlatformIO / Arduino / VSCode)
+.pio/
+.clangd/
+hardware/esp32/main/build/
+hardware/esp32/main/.vscode/
+hardware/esp32/main/.pio/
