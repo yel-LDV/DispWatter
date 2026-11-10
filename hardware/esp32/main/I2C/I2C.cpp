@@ -13,7 +13,7 @@ void I2C::init() {
 void I2C::clean() { _lcd.clear(); }
 
 void I2C::clean(uint8_t line) {
-  if (line < 0 || line > 1)
+  if (line >= LCD_ROWS)
     return;
   String text = "                ";
   _lcd.setCursor(0, line);
@@ -24,7 +24,7 @@ void I2C::light(bool state) {
   if (state)
     _lcd.backlight();
   else
-    _lcd.noBacklight;
+    _lcd.noBacklight();
 }
 
 void I2C::off() { _lcd.noBacklight(); }
@@ -32,9 +32,7 @@ void I2C::off() { _lcd.noBacklight(); }
 void I2C::onn() { _lcd.backlight(); }
 
 void I2C::print(uint8_t col, uint8_t line, const String &text) {
-  if (col < 0 || col > LCD_COLS)
-    return;
-  if (line < 0 || line > LCD_ROWS)
+  if (col >= LCD_COLS || line >= LCD_ROWS)
     return;
 
   _lcd.setCursor(col, line);
