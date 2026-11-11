@@ -27,23 +27,55 @@ unsigned long displayOverrideUntil = 0;
 float lastDistanceMm = -1.0f;
 bool backendAuthenticated = false;
 bool configReady = false;
+String displayOverrideLine0;
+String displayOverrideLine1;
 
-String padLine(const String& text) {
-    String out = text;
-    if (out.length() > LCD_COLS) out = out.substring(0, LCD_COLS);
-    while (out.length() < LCD_COLS) out += ' ';
+String sanitizeLcd(const String& input) {
+    String out = input;
+    // Transliterate common Spanish/European accented letters and replace
+    // Unicode punctuation/icons that HD44780 character ROMs cannot render.
+    out.replace("á", "a"); out.replace("é", "e"); out.replace("í", "i");
+    out.replace("ó", "o"); out.replace("ú", "u"); out.replace("ü", "u"); out.replace("ñ", "n");
+    out.replace("Á", "A"); out.replace("É", "E"); out.replace("Í", "I");
+    out.replace("Ó", "O"); out.replace("Ú", "U"); out.replace("Ü", "U"); out.replace("Ñ", "N");
+    out.replace("¿", ""); out.replace("¡", ""); out.replace("…", "...");
+    out.replace("–", "-"); out.replace("—", "-"); out.replace("°", " deg");
+    for (size_t i = 0; i < out.length(); ++i) {
+        const uint8_t c = static_cast<uint8_t>(out[i]);
+        if (c < 0x20 || c > 0x7e) out.setCharAt(i, ' ');
+    }
     return out;
 }
 
+String lcdWindow(const String& raw, uint8_t row) {
+    const String text = sanitizeLcd(raw);
+    if (text.length() <= LCD_COLS) {
+        String out = text;
+        while (out.length() < LCD_COLS) out += ' ';
+        return out;
+    }
+
+    // Bounce-scroll: displays the whole string, then scrolls back to its start.
+    const unsigned maxOffset = text.length() - LCD_COLS;
+    const unsigned period = maxOffset * 2;
+    const unsigned tick = millis() / 300UL + row * 5U;
+    const unsigned phase = period ? tick % period : 0;
+    const unsigned offset = phase <= maxOffset ? phase : period - phase;
+    return text.substring(offset, offset + LCD_COLS);
+}
+
 void showLines(const String& line0, const String& line1) {
-    lcd.print(0, 0, padLine(line0));
-    lcd.print(0, 1, padLine(line1));
+    lcd.print(0, 0, lcdWindow(line0, 0));
+    lcd.print(0, 1, lcdWindow(line1, 1));
 }
 
 void refreshLcd() {
-    if (millis() < displayOverrideUntil) return;
+    const unsigned long now = millis();
+    if (now < displayOverrideUntil) {
+        showLines(displayOverrideLine0, displayOverrideLine1);
+        return;
+    }
     const DeviceConfig& cfg = configStore.get();
-
     if (!configReady) {
         showLines("Config invalida", "Revisa /config");
     } else if (comm.isPendingClaim()) {
@@ -51,11 +83,8 @@ void refreshLcd() {
     } else if (!net.isConnected()) {
         showLines(net.statusLine0(), net.statusLine1());
     } else if (!backendAuthenticated) {
-        if (comm.backendFailureVisible()) {
-            showLines("Servicio no disp.", "Reintentando...");
-        } else {
-            showLines("Buscando servicio", cfg.deviceId);
-        }
+        if (comm.backendFailureVisible()) showLines("Servicio no disp.", "Reintentando...");
+        else showLines("Buscando servicio", cfg.deviceId);
     } else {
         String line1 = lastDistanceMm > 0.0f
             ? String(lastDistanceMm / 10.0f, 1) + " cm "
@@ -66,10 +95,9 @@ void refreshLcd() {
 }
 
 void onRelayCommand(bool state) {
-    // Nunca aceptar una orden ON mientras no haya red y backend autenticado.
     if (state && (!net.isConnected() || !backendAuthenticated)) {
         relay.forceOff();
-        Serial.println("[SAFE] Orden de encendido rechazada: sin WiFi/backend");
+        Serial.println("[SAFE] Encendido rechazado: falta WiFi o backend autenticado");
         return;
     }
     relay.set(state);
@@ -77,10 +105,10 @@ void onRelayCommand(bool state) {
 }
 
 void onDisplayCommand(const String& line0, const String& line1, bool clear) {
-    if (clear) lcd.clean();
-    if (line0.length() > 0) lcd.print(0, 0, padLine(line0));
-    if (line1.length() > 0) lcd.print(0, 1, padLine(line1));
-    displayOverrideUntil = millis() + 10000;
+    displayOverrideLine0 = clear ? "" : line0;
+    displayOverrideLine1 = clear ? "" : line1;
+    displayOverrideUntil = millis() + 10000UL;
+    showLines(displayOverrideLine0, displayOverrideLine1);
 }
 
 void onConnectionStatus(bool isConnected) {
@@ -88,7 +116,7 @@ void onConnectionStatus(bool isConnected) {
     lastLcdRefresh = 0;
     if (!isConnected && relay.state()) {
         relay.forceOff();
-        Serial.println("[SAFE] Backend desconectado: relé apagado");
+        Serial.println("[SAFE] Backend desconectado: rele OFF");
     }
     Serial.printf("[WS] %s\n", isConnected ? "Autenticado" : "Sin autenticar");
 }
@@ -118,7 +146,7 @@ void onFactoryReset() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    // El relé queda apagado antes de iniciar LCD, FS, WiFi o WebSocket.
+    // Fail-safe first, before LCD, LittleFS, WiFi or backend startup.
     relay.begin(PIN_RELE, RELE_ON == LOW);
     lcd.init();
     lcd.onn();
@@ -139,7 +167,6 @@ void setup() {
     Serial.printf("[CONFIG] Dispositivo %s (%s)\n",
                   configStore.get().deviceId.c_str(), configStore.get().deviceName.c_str());
     Serial.printf("[POWER] Motivo de arranque: %s\n", power.wakeReasonString().c_str());
-
     sensor.init();
     net.begin();
     comm.onRelayCommand(onRelayCommand);
@@ -158,17 +185,14 @@ void loop() {
         delay(2000);
         return;
     }
-
     net.update();
     comm.update();
     const unsigned long now = millis();
     const DeviceConfig& cfg = configStore.get();
 
-    // Mantener salida desenergizada si falta WiFi o no se autenticó backend.
+    // Relay remains de-energized until WiFi and backend authentication are both live.
     if (!net.isConnected() || !backendAuthenticated) {
-        if (relay.state()) {
-            Serial.println("[SAFE] Sin WiFi/backend: apagando relé");
-        }
+        if (relay.state()) Serial.println("[SAFE] Sin red/backend: apagando rele");
         relay.forceOff();
     }
     relay.guard(now, comm.lastAuthenticatedMs(),
@@ -180,23 +204,21 @@ void loop() {
         const float distance = sensor.getMm();
         if (distance > 0.0f) {
             lastDistanceMm = distance;
-            if (!comm.sendTelemetry(distance, relay.state())) {
-                Serial.println("[WS] Telemetría no enviada: dispositivo no autenticado");
-            }
+            if (!comm.sendTelemetry(distance, relay.state()))
+                Serial.println("[WS] Telemetria no enviada: ESP32 sin autenticar");
         } else {
             lastDistanceMm = -1.0f;
             if (relay.state()) {
-                Serial.println("[SAFE] Lectura del sensor inválida: relé apagado");
+                Serial.println("[SAFE] Sensor sin lectura valida: rele OFF");
                 relay.forceOff();
             }
         }
     }
-
     if (now - lastStatus >= 60000UL) {
         lastStatus = now;
         comm.sendDeviceStatus();
     }
-    if (now - lastLcdRefresh >= 250UL) {
+    if (now - lastLcdRefresh >= 100UL) {
         lastLcdRefresh = now;
         refreshLcd();
     }
