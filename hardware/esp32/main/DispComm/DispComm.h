@@ -1,91 +1,249 @@
-#ifndef DISP_COMM_H
-#define DISP_COMM_H
-
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <WebSocketsClient.h>
-#include <functional>
 
+#include <Crypto.h>
+#include <DispComm.h>
+#include <I2C.h>
+
+#include "HC_SR04.h"
+#include "config.h"
 #include "ConfigStore.h"
-#include "Crypto.h"
 #include "NetManager.h"
+#include "PowerManager.h"
+#include "Relay.h"
 
-typedef std::function<void(bool state)> RelayCommandCallback;
-typedef std::function<void(const String& line0, const String& line1, bool clear)>
-    DisplayCommandCallback;
-typedef std::function<void(bool isConnected)> ConnectionStatusCallback;
-typedef std::function<void()> RebootCallback;
-typedef std::function<void(uint16_t minutes)> SleepCallback;
-typedef std::function<void()> FactoryResetCallback;
+// ==========================================
+// MÓDULOS DEL DISPOSITIVO
+// ==========================================
+I2C lcd(LCD_I2C_ADDR);
+HC_SR04 sensor(PIN_TRIG, PIN_ECHO, 5);
 
-/**
- * Comunicación WebSocket con el backend.
- *
- * Autenticación challenge-response:
- *   backend -> {event:"challenge", nonce}
- *   device  -> {event:"auth", device_id, nonce, proof=HMAC(key_hash, nonce)}
- */
-class DispComm {
-public:
-    DispComm(Crypto& crypto, ConfigStore& config, NetManager& net);
+ConfigStore configStore;
+NetManager net(configStore);
+Crypto crypto;
+DispComm comm(crypto, configStore, net);
+Relay relay;
+PowerManager power;
 
-    void begin();
-    void update();
+// ==========================================
+// ESTADO Y TEMPORIZACIÓN
+// ==========================================
+unsigned long lastSample = 0;
+unsigned long lastLcdRefresh = 0;
+unsigned long lastStatus = 0;
+unsigned long displayOverrideUntil = 0;
 
-    bool sendTelemetry(float distanceMm, bool relayState);
-    void sendPing();
-    void sendDeviceStatus();
-    void ack(const String& requestId, bool ok, const String& error = "");
+float lastDistanceMm = -1.0f;
+bool backendAuthenticated = false;
+bool configReady = false;
 
-    void onRelayCommand(RelayCommandCallback cb) { _relayCb = cb; }
-    void onDisplayCommand(DisplayCommandCallback cb) { _displayCb = cb; }
-    void onConnectionStatus(ConnectionStatusCallback cb) { _connCb = cb; }
-    void onReboot(RebootCallback cb) { _rebootCb = cb; }
-    void onSleep(SleepCallback cb) { _sleepCb = cb; }
-    void onFactoryReset(FactoryResetCallback cb) { _factoryResetCb = cb; }
+// ==========================================
+// UTILIDADES DE PANTALLA
+// ==========================================
+String padLine(const String& text) {
+    String out = text;
+    if (out.length() > LCD_COLS) {
+        out = out.substring(0, LCD_COLS);
+    }
+    while (out.length() < LCD_COLS) {
+        out += ' ';
+    }
+    return out;
+}
 
-    bool isWsConnected() const { return _wsConnected; }
-    bool isAuthenticated() const { return _state == AuthState::Authenticated; }
-    bool isPendingClaim() const { return _state == AuthState::PendingClaim; }
-    bool isConnected() const { return isAuthenticated(); }
-    unsigned long lastAuthenticatedMs() const { return _lastAuthMs; }
-    void setWakeReason(const String& reason) { _wakeReason = reason; }
+void showLines(const String& line0, const String& line1) {
+    lcd.print(0, 0, padLine(line0));
+    lcd.print(0, 1, padLine(line1));
+}
 
-private:
-    enum class AuthState {
-        Disconnected,
-        AwaitChallenge,
-        Authenticating,
-        PendingClaim,
-        Authenticated
-    };
+void refreshLcd() {
+    if (millis() < displayOverrideUntil) {
+        return;
+    }
 
-    void _handleEvent(WStype_t type, uint8_t* payload, size_t length);
-    void _sendAuth(const String& nonce);
-    void _handleJson(const char* json);
-    void _handleCommand(JsonDocument& doc);
-    void _sendJson(JsonDocument& doc);
-    void _setState(AuthState state);
-    void _notifyConnection();
+    const DeviceConfig& cfg = configStore.get();
 
-    Crypto& _crypto;
-    ConfigStore& _config;
-    NetManager& _net;
-    WebSocketsClient _ws;
+    if (!configReady) {
+        showLines("Config invalida", "Revisa /config");
+        return;
+    }
 
-    AuthState _state = AuthState::Disconnected;
-    bool _wsConnected = false;
-    unsigned long _connectedAt = 0;
-    unsigned long _lastPing = 0;
-    unsigned long _lastAuthMs = 0;
-    String _wakeReason = "power_on";
+    if (comm.isPendingClaim()) {
+        showLines("Pendiente vinc.", cfg.deviceId);
+        return;
+    }
 
-    RelayCommandCallback _relayCb;
-    DisplayCommandCallback _displayCb;
-    ConnectionStatusCallback _connCb;
-    RebootCallback _rebootCb;
-    SleepCallback _sleepCb;
-    FactoryResetCallback _factoryResetCb;
-};
+    if (!net.isConnected()) {
+        showLines("Buscando WiFi", cfg.deviceId);
+        return;
+    }
 
-#endif // DISP_COMM_H
+    if (!backendAuthenticated) {
+        showLines("Conectando...", net.connectedSSID());
+        return;
+    }
+
+    String line1;
+    if (lastDistanceMm > 0.0f) {
+        line1 = String(lastDistanceMm / 10.0f, 1);
+        line1 += " cm ";
+    } else {
+        line1 = "---- cm ";
+    }
+    line1 += relay.state() ? "RELE ON" : "RELE OFF";
+
+    showLines("Servidor OK", line1);
+}
+
+// ==========================================
+// CALLBACKS
+// ==========================================
+void onRelayCommand(bool state) {
+    relay.set(state);
+    Serial.printf("[RELE] Estado: %s\n", state ? "ENCENDIDO" : "APAGADO");
+}
+
+void onDisplayCommand(const String& line0, const String& line1, bool clear) {
+    if (clear) {
+        lcd.clean();
+    }
+    if (line0.length() > 0) {
+        lcd.print(0, 0, padLine(line0));
+    }
+    if (line1.length() > 0) {
+        lcd.print(0, 1, padLine(line1));
+    }
+    displayOverrideUntil = millis() + 10000;
+}
+
+void onConnectionStatus(bool isConnected) {
+    backendAuthenticated = isConnected;
+    lastLcdRefresh = 0;
+
+    if (!isConnected) {
+        relay.forceOff();
+        Serial.println("[WS] Backend no autenticado: forzando relé OFF");
+    } else {
+        Serial.println("[WS] Autenticado con el backend");
+    }
+}
+
+void onReboot() {
+    relay.forceOff();
+    Serial.println("[SYS] Reinicio solicitado desde el panel");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+}
+
+void onSleep(uint16_t minutes) {
+    relay.forceOff();
+    power.sleepForMinutes(minutes);
+}
+
+void onFactoryReset() {
+    relay.forceOff();
+    configStore.factoryReset();
+    Serial.println("[SYS] Reset de fabrica solicitado desde el panel");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+}
+
+// ==========================================
+// SETUP
+// ==========================================
+void setup() {
+    Serial.begin(115200);
+    delay(200);
+
+    // Relé apagado antes que cualquier otra cosa.
+    relay.begin(PIN_RELE, RELE_ON == LOW);
+
+    lcd.init();
+    lcd.onn();
+    lcd.clean();
+    showLines("DispWatter", "Iniciando...");
+
+    configReady = configStore.begin();
+    power.begin(configStore.get().wakePin, configStore.get().wakeActiveLow);
+
+    if (!configReady) {
+        Serial.printf("[CONFIG] %s\n", configStore.lastError().c_str());
+        showLines("Config invalida", "Revisa /config");
+        return;
+    }
+
+    crypto.setKeyHash(configStore.get().keyHash);
+    comm.setWakeReason(power.wakeReasonString());
+
+    Serial.printf("[CONFIG] Dispositivo %s (%s)\n",
+                  configStore.get().deviceId.c_str(),
+                  configStore.get().deviceName.c_str());
+    Serial.printf("[POWER] Motivo de arranque: %s\n",
+                  power.wakeReasonString().c_str());
+
+    sensor.init();
+    net.begin();
+
+    comm.onRelayCommand(onRelayCommand);
+    comm.onDisplayCommand(onDisplayCommand);
+    comm.onConnectionStatus(onConnectionStatus);
+    comm.onReboot(onReboot);
+    comm.onSleep(onSleep);
+    comm.onFactoryReset(onFactoryReset);
+    comm.begin();
+
+    showLines("Buscando WiFi", configStore.get().deviceId);
+}
+
+// ==========================================
+// LOOP PRINCIPAL
+// ==========================================
+void loop() {
+    if (!configReady) {
+        delay(2000);
+        return;
+    }
+
+    net.update();
+    comm.update();
+
+    const unsigned long now = millis();
+    const DeviceConfig& cfg = configStore.get();
+
+    if (!net.isConnected() || !backendAuthenticated) {
+        relay.forceOff();
+        Serial.println("[SAFE] Sin WiFi o sin backend: relé apagado");
+    }
+
+    // Fail-safe: tiempo máximo encendido y pérdida prolongada de backend.
+    relay.guard(now, comm.lastAuthenticatedMs(),
+                static_cast<unsigned long>(cfg.maxRelayOnMin) * 60000UL,
+                static_cast<unsigned long>(cfg.maxOfflineMin) * 60000UL);
+
+    if (now - lastSample >= cfg.sampleIntervalMs) {
+        lastSample = now;
+        const float distance = sensor.getMm();
+        if (distance > 0.0f) {
+            lastDistanceMm = distance;
+            comm.sendTelemetry(distance, relay.state());
+        } else {
+            lastDistanceMm = -1.0f;
+            Serial.println("[SENSOR] Lectura inválida: apagando relé por seguridad");
+            relay.forceOff();
+        }
+    }
+
+    if (now - lastStatus >= 60000UL) {
+        lastStatus = now;
+        comm.sendDeviceStatus();
+    }
+
+    if (now - lastLcdRefresh >= 1000UL) {
+        lastLcdRefresh = now;
+        refreshLcd();
+    }
+
+    delay(5);
+}
+
