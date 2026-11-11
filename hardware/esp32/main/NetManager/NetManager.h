@@ -58,6 +58,7 @@ private:
     State _state = State::Idle;
     unsigned long _stateSince = 0;
     unsigned long _lastScan = 0;
+    unsigned long _lastRetryTick = 0;
     unsigned long _messageUntil = 0;
     size_t _candidate = 0;
     bool _wasConnected = false;

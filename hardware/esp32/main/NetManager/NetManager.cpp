@@ -191,8 +191,8 @@ void NetManager::_pollScan() {
         status.visible = true;
         status.connected = false;
         _scan.push_back(status);
-        Serial.printf("[WIFI] Detectada '%s' (%d dBm)%s\n", ssid.c_str(), status.rssi,
-                      status.stored ? " [guardada]" : "");
+        Serial.printf("[WIFI] Detectada '%s' (%ld dBm)%s\n", ssid.c_str(),
+                      static_cast<long>(status.rssi), status.stored ? " [guardada]" : "");
     }
 
     WiFi.scanDelete();
