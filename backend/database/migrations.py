@@ -5,7 +5,7 @@ import logging
 import secrets
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from backend.database.connect import AsyncSessionLocal, engine
 from backend.database.models import User
@@ -53,35 +53,71 @@ async def _meta_set(conn, key: str, value: str) -> None:
 
 
 async def _bootstrap_admin() -> None:
+    """Create and synchronize the managed root administrator from backend/.env."""
     from backend.config import settings
-    from backend.security.auth import hash_password
+    from backend.security.auth import hash_password, verify_password
+
+    username = settings.ADMIN_USER.strip()
+    password = settings.ADMIN_PASSWORD
+    if not username or not password:
+        raise RuntimeError("ADMIN_USER y ADMIN_PASSWORD deben estar configurados en backend/.env")
 
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(User).limit(1))
-        if result.scalar_one_or_none() is not None:
-            return
-
-        username = settings.ADMIN_USER.strip()
-        password = settings.ADMIN_PASSWORD
-        if not username or not password:
-            logger.warning(
-                "No hay usuarios y faltan ADMIN_USER/ADMIN_PASSWORD; "
-                "define ambos en backend/.env para crear el primer administrador."
-            )
-            return
-
-        session.add(
-            User(
-                id=f"USR-{secrets.token_hex(6)}",
-                username=username,
-                password_hash=hash_password(password),
-                role="admin",
-                is_active=True,
-                created_at=datetime.utcnow(),
-            )
+        # Persist an internal marker so changing ADMIN_USER can rename the same
+        # managed account instead of creating orphaned administrators.
+        root_id = await session.scalar(
+            text("SELECT value FROM schema_meta WHERE key = 'root_admin_id'")
         )
+        root_user = await session.get(User, root_id) if root_id else None
+
+        if root_user is None:
+            # Adopt an existing admin on first upgrade, preferring the configured
+            # username; otherwise create a new managed root account.
+            root_user = await session.scalar(
+                select(User).where(User.username == username, User.role == "admin").limit(1)
+            )
+            if root_user is None:
+                root_user = await session.scalar(
+                    select(User).where(User.role == "admin").order_by(User.created_at).limit(1)
+                )
+            if root_user is None:
+                root_user = User(
+                    id=f"USR-ROOT-{secrets.token_hex(6)}",
+                    username=username,
+                    password_hash=hash_password(password),
+                    role="admin",
+                    is_active=True,
+                    created_at=datetime.utcnow(),
+                )
+                session.add(root_user)
+                await session.flush()
+
+            root_id = root_user.id
+            await session.execute(
+                text(
+                    "INSERT INTO schema_meta (key, value) VALUES ('root_admin_id', :value) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                ),
+                {"value": root_id},
+            )
+
+        username_owner = await session.scalar(
+            select(User.id).where(User.username == username, User.id != root_id).limit(1)
+        )
+        if username_owner:
+            raise RuntimeError(
+                f"ADMIN_USER '{username}' ya pertenece a otra cuenta; cambia ADMIN_USER "
+                "o resuelve el usuario duplicado antes de iniciar."
+            )
+
+        root_user.username = username
+        root_user.role = "admin"
+        root_user.is_active = True
+        if not verify_password(root_user.password_hash, password):
+            root_user.password_hash = hash_password(password)
         await session.commit()
-        logger.info("Administrador inicial creado: %s", username)
+
+    logger.info("Cuenta administradora root sincronizada desde backend/.env (%s)", username)
 
 
 async def run_migrations() -> None:
