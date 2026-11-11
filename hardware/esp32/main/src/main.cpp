@@ -32,8 +32,6 @@ String displayOverrideLine1;
 
 String sanitizeLcd(const String& input) {
     String out = input;
-    // Transliterate common Spanish/European accented letters and replace
-    // Unicode punctuation/icons that HD44780 character ROMs cannot render.
     out.replace("á", "a"); out.replace("é", "e"); out.replace("í", "i");
     out.replace("ó", "o"); out.replace("ú", "u"); out.replace("ü", "u"); out.replace("ñ", "n");
     out.replace("Á", "A"); out.replace("É", "E"); out.replace("Í", "I");
@@ -54,8 +52,6 @@ String lcdWindow(const String& raw, uint8_t row) {
         while (out.length() < LCD_COLS) out += ' ';
         return out;
     }
-
-    // Bounce-scroll: displays the whole string, then scrolls back to its start.
     const unsigned maxOffset = text.length() - LCD_COLS;
     const unsigned period = maxOffset * 2;
     const unsigned tick = millis() / 300UL + row * 5U;
@@ -83,8 +79,7 @@ void refreshLcd() {
     } else if (!net.isConnected()) {
         showLines(net.statusLine0(), net.statusLine1());
     } else if (!backendAuthenticated) {
-        if (comm.backendFailureVisible()) showLines("Servicio no disp.", "Reintentando...");
-        else showLines("Buscando servicio", cfg.deviceId);
+        showLines(comm.statusLine0(), comm.statusLine1());
     } else {
         String line1 = lastDistanceMm > 0.0f
             ? String(lastDistanceMm / 10.0f, 1) + " cm "
@@ -146,7 +141,6 @@ void onFactoryReset() {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    // Fail-safe first, before LCD, LittleFS, WiFi or backend startup.
     relay.begin(PIN_RELE, RELE_ON == LOW);
     lcd.init();
     lcd.onn();
@@ -190,7 +184,6 @@ void loop() {
     const unsigned long now = millis();
     const DeviceConfig& cfg = configStore.get();
 
-    // Relay remains de-energized until WiFi and backend authentication are both live.
     if (!net.isConnected() || !backendAuthenticated) {
         if (relay.state()) Serial.println("[SAFE] Sin red/backend: apagando rele");
         relay.forceOff();

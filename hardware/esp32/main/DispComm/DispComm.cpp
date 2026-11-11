@@ -1,5 +1,12 @@
 #include "DispComm.h"
 
+namespace {
+constexpr unsigned long RECONNECT_INTERVAL_MS = 5000;
+constexpr unsigned long CONNECT_TIMEOUT_MS = 15000;
+constexpr unsigned long AUTH_TIMEOUT_MS = 15000;
+constexpr size_t MAX_ERROR_LENGTH = 72;
+}
+
 DispComm::DispComm(Crypto& crypto, ConfigStore& config, NetManager& net)
     : _crypto(crypto), _config(config), _net(net) {}
 
@@ -13,10 +20,42 @@ void DispComm::begin() {
     _ws.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
         this->_handleEvent(type, payload, length);
     });
-    _ws.setReconnectInterval(5000);
-    Serial.printf("[WS] Buscando servicio ws%s://%s:%u%s (reintento cada 5 s)\n",
-                  cfg.backendTls ? "s" : "", cfg.backendHost.c_str(),
-                  cfg.backendPort, cfg.backendPath.c_str());
+    _ws.setReconnectInterval(RECONNECT_INTERVAL_MS);
+    _lastConnectionProgressMs = millis();
+    Serial.printf("[WS] Backend configurado: %s://%s:%u%s; timeout %lus; reintento cada %lus\n",
+                  cfg.backendTls ? "wss" : "ws", cfg.backendHost.c_str(), cfg.backendPort,
+                  cfg.backendPath.c_str(), CONNECT_TIMEOUT_MS / 1000,
+                  RECONNECT_INTERVAL_MS / 1000);
+}
+
+String DispComm::_endpoint() const {
+    const DeviceConfig& cfg = _config.get();
+    return String(cfg.backendTls ? "wss://" : "ws://") + cfg.backendHost + ":" +
+           String(cfg.backendPort) + cfg.backendPath;
+}
+
+String DispComm::statusLine0() const {
+    if (_state == AuthState::Authenticated) return "Backend autent.";
+    if (_state == AuthState::PendingClaim) return "Pendiente claim";
+    if (_hasConnectionFailure) {
+        const unsigned long elapsed = millis() - _lastFailureMs;
+        const unsigned long remaining = elapsed >= RECONNECT_INTERVAL_MS
+            ? 0 : RECONNECT_INTERVAL_MS - elapsed;
+        const unsigned seconds = static_cast<unsigned>((remaining + 999UL) / 1000UL);
+        return String("WS error: ") + _lastError + " " + String(seconds) + "s";
+    }
+    switch (_state) {
+        case AuthState::Disconnected: return "Conectando WS";
+        case AuthState::AwaitChallenge: return "WS OK, espera auth";
+        case AuthState::Authenticating: return "Autenticando WS";
+        case AuthState::PendingClaim: return "Pendiente claim";
+        case AuthState::Authenticated: return "Backend autent.";
+        default: return "Conectando WS";
+    }
+}
+
+String DispComm::statusLine1() const {
+    return _endpoint();
 }
 
 void DispComm::update() {
@@ -24,56 +63,76 @@ void DispComm::update() {
         if (_wsConnected) _ws.disconnect();
         return;
     }
+
     _ws.loop();
+    const unsigned long now = millis();
+
+    if (!_wsConnected && now - _lastConnectionProgressMs >= CONNECT_TIMEOUT_MS) {
+        _recordConnectionFailure("sin respuesta");
+        // Avoid repeating the timeout every loop; next diagnostic window begins now.
+        _lastConnectionProgressMs = now;
+    }
+
     if (_wsConnected && _state != AuthState::Disconnected &&
         _state != AuthState::Authenticated && _state != AuthState::PendingClaim &&
-        millis() - _connectedAt > 12000UL) {
-        _recordConnectionFailure("timeout esperando challenge/auth_status");
+        now - _connectedAt > AUTH_TIMEOUT_MS) {
+        _recordConnectionFailure("timeout auth");
         _ws.disconnect();
     }
-    if (isAuthenticated() && millis() - _lastPing > 30000UL) {
+    if (isAuthenticated() && now - _lastPing > 30000UL) {
         sendPing();
-        _lastPing = millis();
+        _lastPing = now;
     }
 }
 
-void DispComm::_recordConnectionFailure(const char* reason) {
+void DispComm::_recordConnectionFailure(const String& reason) {
     _hasConnectionFailure = true;
     _lastFailureMs = millis();
-    Serial.printf("[WS] Servicio no disponible: %s. Reintento en 5 s\n", reason);
+    _lastError = reason;
+    Serial.printf("[WS] Error conectando a %s: %s. Reintento en %lus\n",
+                  _endpoint().c_str(), _lastError.c_str(), RECONNECT_INTERVAL_MS / 1000);
 }
 
 void DispComm::_handleEvent(WStype_t type, uint8_t* payload, size_t length) {
-    (void)length;
     switch (type) {
         case WStype_DISCONNECTED:
-            if (_wsConnected || _state != AuthState::Disconnected)
-                _recordConnectionFailure("conexión cerrada");
+            if (_wsConnected || _state != AuthState::Disconnected) {
+                _recordConnectionFailure("socket cerrado");
+            }
             _wsConnected = false;
-            _setState(AuthState::Disconnected);
+            _state = AuthState::Disconnected;
+            _lastConnectionProgressMs = millis();
+            _notifyConnection();
             Serial.println("[WS] Desconectado del backend");
             break;
         case WStype_CONNECTED: {
             _wsConnected = true;
+            _hasConnectionFailure = false;
+            _lastError = "";
+            _lastConnectionProgressMs = millis();
             _connectedAt = millis();
             _setState(AuthState::AwaitChallenge);
             StaticJsonDocument<320> hello;
             hello["event"] = "hello";
             hello["device_id"] = _config.get().deviceId;
             hello["firmware"] = _config.get().firmware;
-            Serial.printf("[WS] Conectado a %s:%u%s; enviando hello para %s\n",
-                          _config.get().backendHost.c_str(), _config.get().backendPort,
-                          _config.get().backendPath.c_str(), _config.get().deviceId.c_str());
+            Serial.printf("[WS] Conectado a %s; enviando hello para %s\n",
+                          _endpoint().c_str(), _config.get().deviceId.c_str());
             _sendJson(hello);
             break;
         }
         case WStype_TEXT:
             _handleJson(reinterpret_cast<const char*>(payload));
             break;
-        case WStype_ERROR:
-            _recordConnectionFailure("error de WebSocket");
-            Serial.println("[WS] Error de WebSocket");
+        case WStype_ERROR: {
+            char detail[MAX_ERROR_LENGTH + 1] = {0};
+            const size_t copyLength = (payload && length < MAX_ERROR_LENGTH) ? length
+                                      : (payload ? MAX_ERROR_LENGTH : 0);
+            if (copyLength) memcpy(detail, payload, copyLength);
+            _recordConnectionFailure(copyLength ? String(detail) : String("error socket"));
+            _lastConnectionProgressMs = millis();
             break;
+        }
         default:
             break;
     }
@@ -85,6 +144,7 @@ void DispComm::_setState(AuthState state) {
     if (state == AuthState::Authenticated) {
         _lastAuthMs = millis();
         _hasConnectionFailure = false;
+        _lastError = "";
         Serial.println("[WS] Autenticado con el backend");
     }
     _notifyConnection();
@@ -97,7 +157,7 @@ void DispComm::_notifyConnection() {
 void DispComm::_sendAuth(const String& nonce) {
     const String proof = _crypto.createAuthProof(nonce);
     if (proof.length() != 64) {
-        _recordConnectionFailure("no se pudo calcular proof HMAC");
+        _recordConnectionFailure("proof HMAC invalido");
         _ws.disconnect();
         return;
     }
@@ -111,7 +171,7 @@ void DispComm::_sendAuth(const String& nonce) {
     doc["location"] = cfg.location;
     doc["firmware"] = cfg.firmware;
     doc["wake_reason"] = _wakeReason;
-    Serial.printf("[WS] Enviando autenticación para %s\n", cfg.deviceId.c_str());
+    Serial.printf("[WS] Enviando autenticacion para %s\n", cfg.deviceId.c_str());
     _setState(AuthState::Authenticating);
     _sendJson(doc);
 }
@@ -120,7 +180,7 @@ void DispComm::_handleJson(const char* json) {
     DynamicJsonDocument doc(2048);
     const DeserializationError error = deserializeJson(doc, json);
     if (error) {
-        Serial.printf("[WS] JSON inválido: %s\n", error.c_str());
+        Serial.printf("[WS] JSON invalido: %s\n", error.c_str());
         return;
     }
     const String event = doc["event"] | "";
@@ -145,7 +205,7 @@ void DispComm::_handleJson(const char* json) {
             sendDeviceStatus();
         } else {
             const String errorText = doc["error"] | status;
-            _recordConnectionFailure(errorText.c_str());
+            _recordConnectionFailure(errorText);
             _ws.disconnect();
         }
         return;
@@ -269,13 +329,13 @@ bool DispComm::_sendJson(JsonDocument& doc) {
     serializeJson(doc, output);
     String event = doc["event"] | doc["command"] | "msg";
     if (!_wsConnected) {
-        Serial.printf("[WS] No se envió %s: socket desconectado\n", event.c_str());
+        Serial.printf("[WS] No se envio %s: socket desconectado\n", event.c_str());
         return false;
     }
     const bool ok = _ws.sendTXT(output);
-    Serial.printf("[WS] Envío %s: %s\n", event.c_str(), ok ? "aceptado por socket" : "falló");
+    Serial.printf("[WS] Envio %s: %s\n", event.c_str(), ok ? "aceptado por socket" : "fallo");
     if (!ok) {
-        _recordConnectionFailure("falló sendTXT");
+        _recordConnectionFailure("fallo sendTXT");
         _ws.disconnect();
         return false;
     }

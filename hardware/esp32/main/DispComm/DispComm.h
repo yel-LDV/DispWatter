@@ -37,9 +37,9 @@ public:
     bool isPendingClaim() const { return _state == AuthState::PendingClaim; }
     bool isConnected() const { return isAuthenticated(); }
     unsigned long lastAuthenticatedMs() const { return _lastAuthMs; }
-    bool backendFailureVisible() const {
-        return _hasConnectionFailure && (millis() - _lastFailureMs < 3000UL);
-    }
+    bool backendFailureVisible() const { return _hasConnectionFailure; }
+    String statusLine0() const;
+    String statusLine1() const;
     void setWakeReason(const String& reason) { _wakeReason = reason; }
 
 private:
@@ -51,7 +51,8 @@ private:
     bool _sendJson(JsonDocument& doc);
     void _setState(AuthState state);
     void _notifyConnection();
-    void _recordConnectionFailure(const char* reason);
+    void _recordConnectionFailure(const String& reason);
+    String _endpoint() const;
 
     Crypto& _crypto;
     ConfigStore& _config;
@@ -61,9 +62,11 @@ private:
     bool _wsConnected = false;
     bool _hasConnectionFailure = false;
     unsigned long _lastFailureMs = 0;
+    unsigned long _lastConnectionProgressMs = 0;
     unsigned long _connectedAt = 0;
     unsigned long _lastPing = 0;
     unsigned long _lastAuthMs = 0;
+    String _lastError;
     String _wakeReason = "power_on";
     RelayCommandCallback _relayCb;
     DisplayCommandCallback _displayCb;
