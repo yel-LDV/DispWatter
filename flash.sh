@@ -67,9 +67,18 @@ BACKEND_HOST="${INPUT_HOST:-$DETECTED_IP}"
 read -rp "  Puerto WebSocket del Backend [8765]: " INPUT_PORT
 BACKEND_PORT="${INPUT_PORT:-8765}"
 
-echo -e "\n${CYAN}${BOLD}[3/4] Identidad del Dispositivo (Para tomar posesión en Panel)${NC}"
+echo -e "\n${CYAN}${BOLD}[3/4] Identidad y Metadatos del Dispositivo${NC}"
 read -rp "  ID Único del Bebedero [WATTER-001]: " INPUT_DEV_ID
 DEVICE_ID="${INPUT_DEV_ID:-WATTER-001}"
+
+read -rp "  Nombre del Bebedero [Bebedero Huerto]: " INPUT_DEV_NAME
+DEVICE_NAME="${INPUT_DEV_NAME:-Bebedero Huerto}"
+
+read -rp "  Ubicación o Zona [Patio Principal]: " INPUT_DEV_LOC
+DEVICE_LOCATION="${INPUT_DEV_LOC:-Patio Principal}"
+
+read -rp "  Versión de Firmware [1.0.0]: " INPUT_DEV_VER
+FIRMWARE_VERSION="${INPUT_DEV_VER:-1.0.0}"
 
 read -rp "  Contraseña Secreta del Dispositivo [clave_secreta_99]: " INPUT_DEV_PASS
 DEVICE_PASS="${INPUT_DEV_PASS:-clave_secreta_99}"
@@ -89,6 +98,9 @@ echo -e "${BOLD}Resumen de configuración a flashear:${NC}"
 echo -e "  • SSID WiFi:             ${GREEN}$WIFI_SSID${NC}"
 echo -e "  • Backend WebSocket:     ${GREEN}ws://$BACKEND_HOST:$BACKEND_PORT/ws/device${NC}"
 echo -e "  • Dispositivo ID:        ${GREEN}$DEVICE_ID${NC}"
+echo -e "  • Nombre:                ${GREEN}$DEVICE_NAME${NC}"
+echo -e "  • Ubicación:             ${GREEN}$DEVICE_LOCATION${NC}"
+echo -e "  • Firmware:              ${GREEN}v$FIRMWARE_VERSION${NC}"
 echo -e "  • Clave Secreta:         ${GREEN}********${NC}"
 echo -e "  • Puerto de subida:      ${GREEN}$SERIAL_PORT${NC}"
 echo -e "${YELLOW}----------------------------------------------------------------${NC}"
@@ -116,6 +128,9 @@ cat <<EOF > "$CONFIG_FILE"
 
 #define DEVICE_ID          "$DEVICE_ID"
 #define DEVICE_PASS        "$DEVICE_PASS"
+#define DEVICE_NAME        "$DEVICE_NAME"
+#define DEVICE_LOCATION    "$DEVICE_LOCATION"
+#define FIRMWARE_VERSION   "$FIRMWARE_VERSION"
 
 #define PIN_TRIG           5
 #define PIN_ECHO           18

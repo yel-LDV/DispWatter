@@ -26,6 +26,8 @@ async def send_full_sync(websocket):
             device_list.append({
                 "id": dev.id,
                 "name": dev.name,
+                "location": dev.location,
+                "firmware_version": dev.firmware_version,
                 "hash": dev.key_hash,
                 "claimed": (dev.status == "CLAIMED"),
                 "online": (dev.id in server_state.device_sockets),

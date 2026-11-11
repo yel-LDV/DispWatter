@@ -27,6 +27,9 @@ async def handle_device_message(websocket, raw_message: str):
     if event == "auth":
         token = data.get("token", "")
         timestamp = data.get("timestamp", 0)
+        dev_name = data.get("name") or data.get("device_name") or f"Bebedero {device_id}"
+        dev_location = data.get("location") or "Sin ubicación"
+        dev_fw = data.get("firmware_version") or "1.0.0"
 
         async with get_db() as session:
             result = await session.execute(select(Device).where(Device.id == device_id))
@@ -37,7 +40,9 @@ async def handle_device_message(websocket, raw_message: str):
                 # Si no conocemos la clave, usamos un hash provisional derivado del token
                 device = Device(
                     id=device_id,
-                    name=f"Bebedero {device_id}",
+                    name=dev_name,
+                    location=dev_location,
+                    firmware_version=dev_fw,
                     key_hash=token,  # Guardado provisional hasta el claim
                     status="PENDING_CLAIM",
                     is_online=True
@@ -54,9 +59,15 @@ async def handle_device_message(websocket, raw_message: str):
                 )
                 session.add(default_config)
                 await session.commit()
-                await record_audit("DEVICE_AUTO_REGISTERED", device_id=device_id, details="Dispositivo registrado en estado PENDING_CLAIM")
+                await record_audit("DEVICE_AUTO_REGISTERED", device_id=device_id, details=f"Registrado como PENDING_CLAIM ({dev_name}, {dev_location}, v{dev_fw})")
             else:
                 device.is_online = True
+                if dev_name and device.status == "PENDING_CLAIM":
+                    device.name = dev_name
+                if dev_location:
+                    device.location = dev_location
+                if dev_fw:
+                    device.firmware_version = dev_fw
                 await session.commit()
 
         # Registrar socket en estado activo

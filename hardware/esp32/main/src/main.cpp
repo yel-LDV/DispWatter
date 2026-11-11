@@ -33,17 +33,20 @@ void setup() {
     lcd.init();
     lcd.onn();
     lcd.clean();
-    lcd.print(0, 0, "DispWatter");
-    lcd.print(0, 1, "Iniciando...");
+    lcd.print(0, 0, DEVICE_NAME);
+    lcd.print(0, 1, String("v") + FIRMWARE_VERSION + " Init");
     sensor.init();
     delay(1200);
 
-    // 3. Mostrar estado inicial de WiFi
-    lcd.clean();
-    lcd.print(0, 0, "Conectando WiFi");
-    lcd.print(0, 1, WIFI_SSID);
+    // 3. Asignar metadatos del dispositivo para el handshake
+    comm.setDeviceInfo(DEVICE_NAME, DEVICE_LOCATION, FIRMWARE_VERSION);
 
-    // 4. Registrar Callbacks de Comunicación
+    // 4. Mostrar estado inicial de búsqueda de WiFi
+    lcd.clean();
+    lcd.print(0, 0, "Buscando WiFi...");
+    lcd.print(0, 1, String(NUM_WIFI_NETWORKS) + " redes config.");
+
+    // 5. Registrar Callbacks de Comunicación
     // Callback: Orden de Relé enviada por el Backend
     comm.onRelayCommand([](bool state) {
         digitalWrite(PIN_RELE, state ? RELE_ON : RELE_OFF);
@@ -75,14 +78,14 @@ void setup() {
             lcd.print(0, 0, "Servidor Conect.");
             lcd.print(0, 1, String("ID: ") + DEVICE_ID);
         } else {
-            Serial.println("[WS] Servidor no conectado. Esperando vinculacion...");
+            Serial.println("[WS] Servidor no conectado. Esperando vinculación...");
             lcd.print(0, 0, "Servidor no conn");
             lcd.print(0, 1, String("ID: ") + DEVICE_ID);
         }
     });
 
-    // 5. Iniciar la conexión de red y WebSockets
-    comm.begin(WIFI_SSID, WIFI_PASS, BACKEND_HOST, BACKEND_PORT, BACKEND_PATH);
+    // 6. Iniciar la conexión con la lista de redes WiFi
+    comm.begin(WIFI_NETWORKS, NUM_WIFI_NETWORKS, BACKEND_HOST, BACKEND_PORT, BACKEND_PATH);
 }
 
 // ==========================================
@@ -99,14 +102,15 @@ void loop() {
         ultimoIntento = ahora;
 
         if (!comm.isWiFiConnected()) {
-            Serial.printf("[WIFI] Reconectando a %s...\n", WIFI_SSID);
+            Serial.println("[WIFI] Buscando redes disponibles...");
             lcd.clean(0);
-            lcd.print(0, 0, "Sin WiFi");
+            lcd.print(0, 0, "Buscando WiFi...");
             lcd.clean(1);
-            lcd.print(0, 1, "Reintentando...");
+            lcd.print(0, 1, "Sin conexion");
         } else if (!servidorConectado) {
-            Serial.printf("[WS] Reintentando conectar a ws://%s:%d%s | Dispositivo ID: %s\n",
-                          BACKEND_HOST, BACKEND_PORT, BACKEND_PATH, DEVICE_ID);
+            String connectedSSID = comm.getConnectedSSID();
+            Serial.printf("[WIFI] Conectado a '%s'. Reintentando ws://%s:%d%s | Dispositivo ID: %s\n",
+                          connectedSSID.c_str(), BACKEND_HOST, BACKEND_PORT, BACKEND_PATH, DEVICE_ID);
             lcd.clean(0);
             lcd.print(0, 0, "Servidor no conn");
             lcd.clean(1);

@@ -3,10 +3,16 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include "Crypto.h"
 #include <functional>
+
+struct WiFiCred {
+    const char *ssid;
+    const char *pass;
+};
 
 typedef std::function<void(bool state)> RelayCommandCallback;
 typedef std::function<void(const String &line0, const String &line1, bool clear)> DisplayCommandCallback;
@@ -16,7 +22,11 @@ class DispComm {
 public:
     DispComm(Crypto &crypto);
 
-    // Inicializa la configuración de red y WebSocket
+    // Inicializa con lista de múltiples redes WiFi (cambia automáticamente a la disponible)
+    void begin(const WiFiCred *networks, size_t networkCount,
+               const char *wsHost, uint16_t wsPort, const char *wsPath = "/ws/device");
+
+    // Sobrecarga para una sola red WiFi
     void begin(const char *ssid, const char *password,
                const char *wsHost, uint16_t wsPort, const char *wsPath = "/ws/device");
 
@@ -34,18 +44,27 @@ public:
     void onDisplayCommand(DisplayCommandCallback cb) { _displayCb = cb; }
     void onConnectionStatus(ConnectionStatusCallback cb) { _connCb = cb; }
 
+    void setDeviceInfo(const char *name, const char *location = "Sin ubicación", const char *fwVersion = "1.0.0") {
+        _name = name;
+        _location = location;
+        _fwVersion = fwVersion;
+    }
+
     bool isConnected() const { return _wsConnected && _isAuthenticated; }
     bool isWiFiConnected() const { return WiFi.status() == WL_CONNECTED; }
+    String getConnectedSSID() const { return WiFi.SSID(); }
 
 private:
     Crypto &_crypto;
+    WiFiMulti _wifiMulti;
     WebSocketsClient _webSocket;
 
-    const char *_ssid;
-    const char *_wifiPass;
     const char *_wsHost;
     uint16_t _wsPort;
     const char *_wsPath;
+    const char *_name;
+    const char *_location;
+    const char *_fwVersion;
 
     bool _wsConnected;
     bool _isAuthenticated;

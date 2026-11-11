@@ -8,7 +8,9 @@ const AppState = {
     devices: JSON.parse(localStorage.getItem('dispwatter_devices')) || [
         {
             id: 'WATTER-001',
-            name: 'Bebedero Principal (Patio)',
+            name: 'Bebedero Huerto (Patio)',
+            location: 'Patio Principal',
+            firmware_version: '1.0.0',
             hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
             claimed: true,
             online: true,
@@ -143,6 +145,10 @@ function updateUI() {
 
     // Hardware Identity
     document.getElementById('infoDeviceId').value = dev.id;
+    const nameLocEl = document.getElementById('infoDeviceNameLoc');
+    if (nameLocEl) nameLocEl.value = `${dev.name || dev.id} (${dev.location || 'Sin ubicación'})`;
+    const fwEl = document.getElementById('infoDeviceFw');
+    if (fwEl) fwEl.value = `v${dev.firmware_version || '1.0.0'}`;
     document.getElementById('infoDeviceHash').value = dev.hash || '---';
     document.getElementById('claimStatusText').textContent = dev.claimed ? '✓ Reclamado por ti' : '⚠ No Reclamado';
 }
@@ -333,7 +339,14 @@ function sendWebSocketMessage(msg) {
 
 // Procesar mensajes que vienen del Backend
 function handleServerMessage(data) {
-    if (data.event === 'telemetry') {
+    if (data.event === 'sync_all' && Array.isArray(data.devices)) {
+        if (data.devices.length > 0) {
+            AppState.devices = data.devices;
+            saveDevices();
+            initDeviceSelector();
+            updateUI();
+        }
+    } else if (data.event === 'telemetry') {
         const dev = AppState.devices.find(d => d.id === data.device_id);
         if (dev) {
             dev.currentDist = data.distance_mm;

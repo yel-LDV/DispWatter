@@ -11,6 +11,8 @@ class Device(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), default="Nuevo Bebedero")
+    location: Mapped[str] = mapped_column(String(128), default="Sin ubicación")
+    firmware_version: Mapped[str] = mapped_column(String(32), default="1.0.0")
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     owner_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="PENDING_CLAIM")  # PENDING_CLAIM, CLAIMED, BLOCKED
@@ -26,6 +28,8 @@ class Device(Base):
         return {
             "id": self.id,
             "name": self.name,
+            "location": self.location,
+            "firmware_version": self.firmware_version,
             "key_hash": self.key_hash,
             "owner_id": self.owner_id,
             "status": self.status,

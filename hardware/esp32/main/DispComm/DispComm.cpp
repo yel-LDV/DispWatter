@@ -2,11 +2,12 @@
 
 DispComm::DispComm(Crypto &crypto)
     : _crypto(crypto),
-      _ssid(nullptr),
-      _wifiPass(nullptr),
       _wsHost(nullptr),
       _wsPort(80),
       _wsPath("/ws/device"),
+      _name("Bebedero DispWatter"),
+      _location("Sin ubicación"),
+      _fwVersion("1.0.0"),
       _wsConnected(false),
       _isAuthenticated(false),
       _lastWiFiCheck(0),
@@ -15,22 +16,30 @@ DispComm::DispComm(Crypto &crypto)
       _displayCb(nullptr),
       _connCb(nullptr) {}
 
-void DispComm::begin(const char *ssid, const char *password,
+void DispComm::begin(const WiFiCred *networks, size_t networkCount,
                      const char *wsHost, uint16_t wsPort, const char *wsPath) {
-    _ssid = ssid;
-    _wifiPass = password;
     _wsHost = wsHost;
     _wsPort = wsPort;
     _wsPath = wsPath;
 
     WiFi.mode(WIFI_STA);
-    WiFi.begin(_ssid, _wifiPass);
+    for (size_t i = 0; i < networkCount; i++) {
+        if (networks[i].ssid && strlen(networks[i].ssid) > 0) {
+            _wifiMulti.addAP(networks[i].ssid, networks[i].pass);
+        }
+    }
 
     _webSocket.begin(_wsHost, _wsPort, _wsPath);
     _webSocket.onEvent([this](WStype_t type, uint8_t *payload, size_t length) {
         this->_handleWebSocketEvent(type, payload, length);
     });
-    _webSocket.setReconnectInterval(3000);
+    _webSocket.setReconnectInterval(5000);
+}
+
+void DispComm::begin(const char *ssid, const char *password,
+                     const char *wsHost, uint16_t wsPort, const char *wsPath) {
+    WiFiCred single[1] = {{ssid, password}};
+    begin(single, 1, wsHost, wsPort, wsPath);
 }
 
 void DispComm::update() {
@@ -47,11 +56,9 @@ void DispComm::update() {
 }
 
 void DispComm::_checkWiFi() {
-    if (millis() - _lastWiFiCheck > 5000) {
+    if (millis() - _lastWiFiCheck > 2000) {
         _lastWiFiCheck = millis();
-        if (WiFi.status() != WL_CONNECTED && _ssid != nullptr) {
-            WiFi.reconnect();
-        }
+        _wifiMulti.run();
     }
 }
 
@@ -81,11 +88,14 @@ void DispComm::_sendAuthHandshake() {
     uint32_t ts = millis() / 1000;
     String token = _crypto.createAuthToken(ts);
 
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["event"] = "auth";
     doc["device_id"] = _crypto.getDeviceId();
     doc["token"] = token;
     doc["timestamp"] = ts;
+    if (_name) doc["name"] = _name;
+    if (_location) doc["location"] = _location;
+    if (_fwVersion) doc["firmware_version"] = _fwVersion;
 
     String output;
     serializeJson(doc, output);
