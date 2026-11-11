@@ -11,7 +11,6 @@ const VIEW_TITLES = {
   dashboard: "Dashboard",
   networks: "Redes WiFi",
   device: "Dispositivo",
-  system: "Sistema",
   audit: "Auditoría",
 };
 
@@ -26,6 +25,11 @@ function setConnectionBadge(connected, text) {
   label.textContent = text || (connected ? "Conectado" : "Desconectado");
 }
 
+function removeSystemView() {
+  document.querySelector('[data-view="system"]')?.remove();
+  el("view-system")?.remove();
+}
+
 function showView(name) {
   currentView = name;
   document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
@@ -34,7 +38,6 @@ function showView(name) {
     item.classList.toggle("active", item.dataset.view === name);
   });
   el("viewTitle").textContent = VIEW_TITLES[name] || name;
-
   if (name === "dashboard") renderDashboard(false);
   if (name === "networks") {
     renderWifi();
@@ -87,23 +90,15 @@ function bindSocket() {
     const resumed = await tryResume();
     if (!resumed) setConnectionBadge(true, "Sin sesión");
   });
-
-  on("close", () => {
-    setConnectionBadge(false, "Reconectando…");
-  });
-
+  on("close", () => setConnectionBadge(false, "Reconectando…"));
   on("sync_all", handleSync);
   on("telemetry", updateTelemetry);
   on("device_status", updateDeviceStatus);
-
   on("audit_result", (message) => {
     if (Array.isArray(message.entries)) renderAudit(message.entries);
   });
-
   on("error", (message) => {
-    if (!message.request_id) {
-      toast(message.message || message.code || "Error del backend", "error");
-    }
+    if (!message.request_id) toast(message.message || message.code || "Error del backend", "error");
   });
 }
 
@@ -116,10 +111,13 @@ function bindDeviceChanges() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  removeSystemView();
   el("backendEndpoint").textContent = backendEndpoint();
   initAuth(authenticated);
   initDevices();
   initWifi();
+  // initSystem conserva las acciones remotas del dispositivo (reinicio/sleep/reset),
+  // pero el apartado de control de servicios del servidor ya no forma parte del panel.
   initSystem();
   initAudit();
   bindNav();
@@ -127,7 +125,6 @@ document.addEventListener("DOMContentLoaded", () => {
   bindSocket();
   bindDeviceChanges();
   showView("dashboard");
-
   socket.connect().catch(() => {
     setConnectionBadge(false, "Sin backend");
     toast("No se pudo conectar con el backend. Reintentando…", "error");

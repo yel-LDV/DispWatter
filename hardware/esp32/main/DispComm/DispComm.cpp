@@ -1,91 +1,283 @@
-#ifndef DISP_COMM_H
-#define DISP_COMM_H
+#include "DispComm.h"
 
-#include <Arduino.h>
-#include <ArduinoJson.h>
-#include <WebSocketsClient.h>
-#include <functional>
+DispComm::DispComm(Crypto& crypto, ConfigStore& config, NetManager& net)
+    : _crypto(crypto), _config(config), _net(net) {}
 
-#include "ConfigStore.h"
-#include "Crypto.h"
-#include "NetManager.h"
+void DispComm::begin() {
+    const DeviceConfig& cfg = _config.get();
+    if (cfg.backendTls) {
+        _ws.beginSSL(cfg.backendHost.c_str(), cfg.backendPort, cfg.backendPath.c_str());
+    } else {
+        _ws.begin(cfg.backendHost.c_str(), cfg.backendPort, cfg.backendPath.c_str());
+    }
+    _ws.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
+        this->_handleEvent(type, payload, length);
+    });
+    _ws.setReconnectInterval(5000);
+    Serial.printf("[WS] Buscando servicio ws%s://%s:%u%s (reintento cada 5 s)\n",
+                  cfg.backendTls ? "s" : "", cfg.backendHost.c_str(),
+                  cfg.backendPort, cfg.backendPath.c_str());
+}
 
-typedef std::function<void(bool state)> RelayCommandCallback;
-typedef std::function<void(const String& line0, const String& line1, bool clear)>
-    DisplayCommandCallback;
-typedef std::function<void(bool isConnected)> ConnectionStatusCallback;
-typedef std::function<void()> RebootCallback;
-typedef std::function<void(uint16_t minutes)> SleepCallback;
-typedef std::function<void()> FactoryResetCallback;
+void DispComm::update() {
+    if (!_net.isConnected()) {
+        if (_wsConnected) _ws.disconnect();
+        return;
+    }
+    _ws.loop();
+    if (_wsConnected && _state != AuthState::Disconnected &&
+        _state != AuthState::Authenticated && _state != AuthState::PendingClaim &&
+        millis() - _connectedAt > 12000UL) {
+        _recordConnectionFailure("timeout esperando challenge/auth_status");
+        _ws.disconnect();
+    }
+    if (isAuthenticated() && millis() - _lastPing > 30000UL) {
+        sendPing();
+        _lastPing = millis();
+    }
+}
 
-/**
- * Comunicación WebSocket con el backend.
- *
- * Autenticación challenge-response:
- *   backend -> {event:"challenge", nonce}
- *   device  -> {event:"auth", device_id, nonce, proof=HMAC(key_hash, nonce)}
- */
-class DispComm {
-public:
-    DispComm(Crypto& crypto, ConfigStore& config, NetManager& net);
+void DispComm::_recordConnectionFailure(const char* reason) {
+    _hasConnectionFailure = true;
+    _lastFailureMs = millis();
+    Serial.printf("[WS] Servicio no disponible: %s. Reintento en 5 s\n", reason);
+}
 
-    void begin();
-    void update();
+void DispComm::_handleEvent(WStype_t type, uint8_t* payload, size_t length) {
+    (void)length;
+    switch (type) {
+        case WStype_DISCONNECTED:
+            if (_wsConnected || _state != AuthState::Disconnected)
+                _recordConnectionFailure("conexión cerrada");
+            _wsConnected = false;
+            _setState(AuthState::Disconnected);
+            Serial.println("[WS] Desconectado del backend");
+            break;
+        case WStype_CONNECTED: {
+            _wsConnected = true;
+            _connectedAt = millis();
+            _setState(AuthState::AwaitChallenge);
+            StaticJsonDocument<320> hello;
+            hello["event"] = "hello";
+            hello["device_id"] = _config.get().deviceId;
+            hello["firmware"] = _config.get().firmware;
+            Serial.printf("[WS] Conectado a %s:%u%s; enviando hello para %s\n",
+                          _config.get().backendHost.c_str(), _config.get().backendPort,
+                          _config.get().backendPath.c_str(), _config.get().deviceId.c_str());
+            _sendJson(hello);
+            break;
+        }
+        case WStype_TEXT:
+            _handleJson(reinterpret_cast<const char*>(payload));
+            break;
+        case WStype_ERROR:
+            _recordConnectionFailure("error de WebSocket");
+            Serial.println("[WS] Error de WebSocket");
+            break;
+        default:
+            break;
+    }
+}
 
-    bool sendTelemetry(float distanceMm, bool relayState);
-    void sendPing();
-    void sendDeviceStatus();
-    void ack(const String& requestId, bool ok, const String& error = "");
+void DispComm::_setState(AuthState state) {
+    if (_state == state) return;
+    _state = state;
+    if (state == AuthState::Authenticated) {
+        _lastAuthMs = millis();
+        _hasConnectionFailure = false;
+        Serial.println("[WS] Autenticado con el backend");
+    }
+    _notifyConnection();
+}
 
-    void onRelayCommand(RelayCommandCallback cb) { _relayCb = cb; }
-    void onDisplayCommand(DisplayCommandCallback cb) { _displayCb = cb; }
-    void onConnectionStatus(ConnectionStatusCallback cb) { _connCb = cb; }
-    void onReboot(RebootCallback cb) { _rebootCb = cb; }
-    void onSleep(SleepCallback cb) { _sleepCb = cb; }
-    void onFactoryReset(FactoryResetCallback cb) { _factoryResetCb = cb; }
+void DispComm::_notifyConnection() {
+    if (_connCb) _connCb(_state == AuthState::Authenticated);
+}
 
-    bool isWsConnected() const { return _wsConnected; }
-    bool isAuthenticated() const { return _state == AuthState::Authenticated; }
-    bool isPendingClaim() const { return _state == AuthState::PendingClaim; }
-    bool isConnected() const { return isAuthenticated(); }
-    unsigned long lastAuthenticatedMs() const { return _lastAuthMs; }
-    void setWakeReason(const String& reason) { _wakeReason = reason; }
+void DispComm::_sendAuth(const String& nonce) {
+    const String proof = _crypto.createAuthProof(nonce);
+    if (proof.length() != 64) {
+        _recordConnectionFailure("no se pudo calcular proof HMAC");
+        _ws.disconnect();
+        return;
+    }
+    const DeviceConfig& cfg = _config.get();
+    StaticJsonDocument<768> doc;
+    doc["event"] = "auth";
+    doc["device_id"] = cfg.deviceId;
+    doc["nonce"] = nonce;
+    doc["proof"] = proof;
+    doc["name"] = cfg.deviceName;
+    doc["location"] = cfg.location;
+    doc["firmware"] = cfg.firmware;
+    doc["wake_reason"] = _wakeReason;
+    Serial.printf("[WS] Enviando autenticación para %s\n", cfg.deviceId.c_str());
+    _setState(AuthState::Authenticating);
+    _sendJson(doc);
+}
 
-private:
-    enum class AuthState {
-        Disconnected,
-        AwaitChallenge,
-        Authenticating,
-        PendingClaim,
-        Authenticated
-    };
+void DispComm::_handleJson(const char* json) {
+    DynamicJsonDocument doc(2048);
+    const DeserializationError error = deserializeJson(doc, json);
+    if (error) {
+        Serial.printf("[WS] JSON inválido: %s\n", error.c_str());
+        return;
+    }
+    const String event = doc["event"] | "";
+    Serial.printf("[WS] Recibido evento: %s\n", event.c_str());
+    if (event == "challenge") {
+        const String nonce = doc["nonce"] | "";
+        if (nonce.length() == 0) {
+            _recordConnectionFailure("challenge sin nonce");
+            _ws.disconnect();
+            return;
+        }
+        _sendAuth(nonce);
+        return;
+    }
+    if (event == "auth_status") {
+        const String status = doc["status"] | "";
+        if (status == "ok") {
+            _setState(AuthState::Authenticated);
+            sendDeviceStatus();
+        } else if (status == "pending_claim") {
+            _setState(AuthState::PendingClaim);
+            sendDeviceStatus();
+        } else {
+            const String errorText = doc["error"] | status;
+            _recordConnectionFailure(errorText.c_str());
+            _ws.disconnect();
+        }
+        return;
+    }
+    if (doc.containsKey("command")) {
+        _handleCommand(doc);
+        return;
+    }
+    if (event == "pong") return;
+}
 
-    void _handleEvent(WStype_t type, uint8_t* payload, size_t length);
-    void _sendAuth(const String& nonce);
-    void _handleJson(const char* json);
-    void _handleCommand(JsonDocument& doc);
-    bool _sendJson(JsonDocument& doc);
-    void _setState(AuthState state);
-    void _notifyConnection();
+void DispComm::_handleCommand(JsonDocument& doc) {
+    const String command = doc["command"] | "";
+    const String requestId = doc["request_id"] | "";
+    if (!isAuthenticated()) {
+        if (requestId.length() > 0) ack(requestId, false, "unauthorized");
+        return;
+    }
+    if (command == "set_relay") {
+        const bool state = doc["state"] | false;
+        if (_relayCb) _relayCb(state);
+        ack(requestId, true);
+        return;
+    }
+    if (command == "display") {
+        const String line0 = doc["line0"] | "";
+        const String line1 = doc["line1"] | "";
+        const bool clear = doc["clear"] | false;
+        if (_displayCb) _displayCb(line0, line1, clear);
+        ack(requestId, true);
+        return;
+    }
+    if (command == "wifi_list") {
+        const String networks = _net.networksJson();
+        DynamicJsonDocument response(4600);
+        response["event"] = "wifi_list";
+        response["request_id"] = requestId;
+        DynamicJsonDocument array(4096);
+        if (!deserializeJson(array, networks)) response["networks"] = array.as<JsonArray>();
+        else response["networks"] = serialized("[]");
+        _sendJson(response);
+        return;
+    }
+    if (command == "wifi_add") {
+        const bool ok = _net.addAndSave(doc["ssid"] | "", doc["password"] | "");
+        ack(requestId, ok, ok ? "" : _net.lastError());
+        return;
+    }
+    if (command == "wifi_remove") {
+        const bool ok = _net.removeAndSave(doc["ssid"] | "");
+        ack(requestId, ok, ok ? "" : _net.lastError());
+        return;
+    }
+    if (command == "wifi_reorder") {
+        const bool ok = _net.reorderAndSave(doc["ssid"] | "", doc["index"] | 0);
+        ack(requestId, ok, ok ? "" : _net.lastError());
+        return;
+    }
+    if (command == "reboot") {
+        ack(requestId, true); delay(300); if (_rebootCb) _rebootCb(); return;
+    }
+    if (command == "sleep") {
+        const uint16_t minutes = doc["minutes"] | 60;
+        ack(requestId, true); delay(300); if (_sleepCb) _sleepCb(minutes); return;
+    }
+    if (command == "factory_reset") {
+        ack(requestId, true); delay(300); if (_factoryResetCb) _factoryResetCb(); return;
+    }
+    ack(requestId, false, "unknown_command");
+}
 
-    Crypto& _crypto;
-    ConfigStore& _config;
-    NetManager& _net;
-    WebSocketsClient _ws;
+bool DispComm::sendTelemetry(float distanceMm, bool relayState) {
+    if (!isAuthenticated()) return false;
+    StaticJsonDocument<384> doc;
+    doc["event"] = "telemetry";
+    doc["device_id"] = _config.get().deviceId;
+    doc["distance_mm"] = distanceMm;
+    doc["relay_state"] = relayState;
+    doc["timestamp"] = millis() / 1000;
+    doc["rssi"] = _net.rssi();
+    Serial.printf("[WS] Enviando telemetry distance=%.1f relay=%s\n", distanceMm,
+                  relayState ? "ON" : "OFF");
+    return _sendJson(doc);
+}
 
-    AuthState _state = AuthState::Disconnected;
-    bool _wsConnected = false;
-    unsigned long _connectedAt = 0;
-    unsigned long _lastPing = 0;
-    unsigned long _lastAuthMs = 0;
-    String _wakeReason = "power_on";
+void DispComm::sendPing() {
+    if (!_wsConnected) return;
+    StaticJsonDocument<192> doc;
+    doc["event"] = "ping";
+    doc["device_id"] = _config.get().deviceId;
+    _sendJson(doc);
+}
 
-    RelayCommandCallback _relayCb;
-    DisplayCommandCallback _displayCb;
-    ConnectionStatusCallback _connCb;
-    RebootCallback _rebootCb;
-    SleepCallback _sleepCb;
-    FactoryResetCallback _factoryResetCb;
-};
+void DispComm::sendDeviceStatus() {
+    if (!_wsConnected) return;
+    const DeviceConfig& cfg = _config.get();
+    StaticJsonDocument<512> doc;
+    doc["event"] = "device_status";
+    doc["device_id"] = cfg.deviceId;
+    doc["uptime_s"] = millis() / 1000;
+    doc["rssi"] = _net.rssi();
+    doc["ip"] = _net.ip().toString();
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["wake_reason"] = _wakeReason;
+    doc["firmware"] = cfg.firmware;
+    doc["pending_claim"] = isPendingClaim();
+    _sendJson(doc);
+}
 
-#endif // DISP_COMM_H
+void DispComm::ack(const String& requestId, bool ok, const String& error) {
+    StaticJsonDocument<256> doc;
+    doc["event"] = "ack";
+    doc["request_id"] = requestId;
+    doc["ok"] = ok;
+    if (!ok && error.length() > 0) doc["error"] = error;
+    _sendJson(doc);
+}
+
+bool DispComm::_sendJson(JsonDocument& doc) {
+    String output;
+    serializeJson(doc, output);
+    String event = doc["event"] | doc["command"] | "msg";
+    if (!_wsConnected) {
+        Serial.printf("[WS] No se envió %s: socket desconectado\n", event.c_str());
+        return false;
+    }
+    const bool ok = _ws.sendTXT(output);
+    Serial.printf("[WS] Envío %s: %s\n", event.c_str(), ok ? "aceptado por socket" : "falló");
+    if (!ok) {
+        _recordConnectionFailure("falló sendTXT");
+        _ws.disconnect();
+        return false;
+    }
+    return true;
+}
