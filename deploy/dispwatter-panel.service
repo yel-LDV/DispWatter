@@ -1,0 +1,17 @@
+[Unit]
+Description=DispWatter panel (static web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=angedl_
+Group=angedl_
+WorkingDirectory=/home/angedl_/Proyectos/DispWatter
+ExecStart=/usr/bin/python3 -m http.server 3000 --bind 0.0.0.0 --directory /home/angedl_/Proyectos/DispWatter/panel
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

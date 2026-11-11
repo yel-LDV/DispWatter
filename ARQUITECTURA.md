@@ -1,202 +1,296 @@
-# 💧 DispWatter - Documentación de Arquitectura y Especificación del Sistema
+# DispWatter — Arquitectura
 
-Sistema inteligente de bebedero y dispensador de agua multi-dispositivo con ESP32, comunicación bidireccional por WebSockets, backend en Python y panel de control web.
+Sistema de bebedero/dispensador de agua con ESP32, backend WebSocket en Python,
+panel web y almacenamiento SQLite.
 
 ---
 
-## 1. Visión General del Sistema
-
-El sistema mide los niveles de agua mediante un sensor ultrasónico (HC-SR04) montado en la parte superior del contenedor. El hardware solo transmite la distancia bruta en milímetros hacia el backend. El backend centraliza la inteligencia:
-1. Calcula el **porcentaje de llenado** y los **litros actuales** según la geometría calibrada del tanque.
-2. Evalúa los umbrales de **riego/llenado automático**.
-3. Envía órdenes al ESP32 para activar/apagar el **relé** (bomba o electroválvula) y actualizar la información de la **pantalla LCD 16x2 (I2C)**.
-4. Admite **múltiples dispositivos** conectados concurrentemente.
-5. Permite a los usuarios tomar posesión (*claim*) de sus dispositivos desde el panel web mediante un ID y contraseña de hardware.
+## 1. Visión general
 
 ```
-  ┌─────────────────────────────────────────────────────────┐
-  │                   ESP32 (Hardware)                      │
-  │  [HC-SR04] (Medición mm) ──► [DispComm & Crypto]        │
-  │  [LCD 16x2 I2C] ◄─────────── [DispComm]                 │
-  │  [Relé Pin 4]   ◄─────────── [DispComm]                 │
-  └────────────────────────────┬────────────────────────────┘
-                               │  WebSocket Bidireccional Seguro
-                               │  (JSON autenticado con SHA-256)
-                               ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │                    Backend (Python)                     │
-  │  - Servidor WebSocket & Gestor de Dispositivos          │
-  │  - Lógica de Tanques (Litros, Porcentajes, Histeresis)  │
-  │  - Persistencia SQLite (Telemetría, Dispositivos, Users)│
-  └────────────────────────────▲────────────────────────────┘
-                               │  HTTP REST / WebSocket
-                               ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │                 Panel Web (Frontend)                    │
-  │  - Toma de posesión de dispositivos (ID + Contraseña)   │
-  │  - Configuración geométrica (Capacidad, Fondos, Espejo) │
-  │  - Monitoreo en tiempo real (% y Litros) y Control Relé │
-  └─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ ESP32                                                        │
+│  HC-SR04 ──► muestreo mm ──► telemetría                      │
+│  LCD 16x2 I2C ◄── estado + comandos display                  │
+│  Relé GPIO4 ◄── set_relay (fail-safe local)                  │
+│  LittleFS /config.json ◄── identidad, WiFi, backend          │
+│  Deep sleep ◄── temporizador + botón GPIO33                  │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ ws://…/ws/device
+                            │ hello → challenge → auth (HMAC)
+┌───────────────────────────▼──────────────────────────────────┐
+│ Backend Python                                               │
+│  - Router WebSocket (/ws/device y /ws/panel)                 │
+│  - Autenticación de usuarios (Argon2id + JWT)                │
+│  - Challenge-response de dispositivos                        │
+│  - Lógica de tanque, llenado automático y fail-safe          │
+│  - Acciones WiFi, dispositivo y systemd                      │
+│  - SQLite + auditoría                                        │
+└───────────────────────────▲──────────────────────────────────┘
+                            │ ws://…/ws/panel (JWT)
+┌───────────────────────────┴──────────────────────────────────┐
+│ Panel web estático                                           │
+│  - Login, dashboard, redes WiFi, dispositivo, sistema, audit │
+│  - Tema oscuro con acentos neón                              │
+│  - Nunca recibe contraseñas WiFi ni key_hash                 │
+└──────────────────────────────────────────────────────────────┘
 ```
 
----
+Componentes:
 
-## 2. Fórmulas de Calibración de Tanque
-
-El sensor ultrasónico se ubica en la tapa del tanque apuntando hacia el fondo:
-
-* $D_{\text{fondo}}$: Distancia en milímetros desde el sensor hasta el fondo del tanque vacío.
-* $D_{\text{espejo}}$: Distancia en milímetros desde el sensor hasta el nivel máximo del agua (espejo de agua máximo para evitar mojar el sensor).
-* $D_{\text{medida}}$: Distancia leída por el sensor en milímetros.
-* $V_{\text{total}}$: Capacidad nominal del contenedor en litros.
-
-### Altura útil de agua ($H_{\text{útil}}$)
-$$H_{\text{útil}} = D_{\text{fondo}} - D_{\text{espejo}}$$
-
-### Nivel actual en milímetros ($H_{\text{actual}}$)
-$$H_{\text{actual}} = D_{\text{fondo}} - D_{\text{medida}}$$
-
-### Porcentaje de agua ($\%$)
-$$\text{Porcentaje} = \text{clamp}\left( \frac{D_{\text{fondo}} - D_{\text{medida}}}{D_{\text{fondo}} - D_{\text{espejo}}} \times 100, \quad 0, \quad 100 \right)$$
-
-### Volumen actual en litros
-$$\text{Litros} = V_{\text{total}} \times \left( \frac{\text{Porcentaje}}{100} \right)$$
+- `hardware/esp32/main/` — firmware PlatformIO.
+- `backend/` — servidor WebSocket, BD y seguridad.
+- `panel/` — HTML/CSS/JS sin build step.
+- `deploy/` — systemd, sudoers y helper.
+- `scripts/device_config.py` — generación/validación de configuración.
+- `flash.sh` — configuración y flasheo.
 
 ---
 
-## 3. Modelo de Seguridad y Criptografía
+## 2. Configuración persistente
 
-### Identidad del Hardware
-Cada ESP32 se flashea con:
-* `DEVICE_ID`: Identificador único (ejemplo: `WATTER-001`).
-* `DEVICE_PASS`: Clave secreta definida en el firmware (ejemplo: `watter_secret_pass_99`).
-* `OWNER_ID_CLAIM`: Identificador inicial o temporal de dueño (puede ser `"UNCLAIMED"` hasta ser reclamado en el panel).
+### 2.1 Dos archivos, un origen de verdad
 
-### Algoritmo de Hashing (SHA-256)
-El ESP32 utiliza la aceleración por hardware de mbedTLS integrada en el ESP32 para calcular hashes SHA-256:
+| Archivo | Dónde vive | Contenido |
+| --- | --- | --- |
+| `device_config.json` | Host, ignorado por git | Identidad, `claim_secret`, WiFi, backend, límites |
+| `data/config.json` | LittleFS del ESP32 | Lo mismo, pero solo `key_hash` (nunca el secreto) |
 
-$$\text{DeviceKeyHash} = \text{SHA256}(\text{DEVICE\_ID} + ":" + \text{DEVICE\_PASS})$$
+`flash.sh` genera `data/config.json` con `scripts/device_config.py` y lo sube
+junto al firmware. En flasheos posteriores **pregunta** si se conserva la
+configuración del ESP32; la opción por defecto es conservarla.
 
-Durante el handshake WebSocket, el ESP32 genera un token dinámico con timestamp para evitar ataques de repetición:
-$$\text{HandshakeToken} = \text{SHA256}(\text{DeviceKeyHash} + ":" + \text{timestamp})$$
+`config.h` es estático: solo pines, dirección I2C y valores por defecto. No
+contiene credenciales ni datos de usuario.
 
-### Flujo de "Toma de Posesión" (Device Claiming)
-1. El usuario flashea el ESP32 con un `DEVICE_ID` y `DEVICE_PASS`.
-2. El ESP32 se conecta al backend. El backend registra el dispositivo en estado `PENDING_CLAIM`.
-3. El usuario inicia sesión en el panel web y va a **"Vincular Dispositivo"**.
-4. Introduce el `DEVICE_ID` y `DEVICE_PASS`.
-5. El backend calcula $\text{SHA256}(\text{DEVICE\_ID} + ":" + \text{DEVICE\_PASS})$ y lo compara con el hash almacenado en base de datos.
-6. Si coincide, asigna el `owner_id` del usuario al dispositivo y cambia su estado a `CLAIMED`.
+### 2.2 Estructura de `config.json`
 
----
-
-## 4. Protocolo de Mensajería Bidireccional (WebSockets JSON)
-
-### 4.1 De ESP32 hacia Backend
-
-#### Handshake / Autenticación:
 ```json
 {
-  "event": "auth",
-  "device_id": "WATTER-001",
-  "token": "a4f89b...",
-  "timestamp": 1731283200
+  "schema": 1,
+  "device": {
+    "id": "WATTER-001",
+    "name": "Bebedero Huerto",
+    "location": "Patio Principal",
+    "firmware": "1.0.0",
+    "key_hash": "64 hex"
+  },
+  "backend": {
+    "host": "192.168.1.100",
+    "port": 8765,
+    "path": "/ws/device",
+    "tls": false
+  },
+  "wifi": [
+    { "ssid": "Casa", "password": "…" },
+    { "ssid": "Taller", "password": "…" }
+  ],
+  "sampling": { "interval_ms": 2000, "retry_ms": 5000 },
+  "power": { "wake_pin": 33, "wake_active_low": true, "sleep_timer_min": 60 },
+  "safety": { "max_relay_on_min": 10, "max_offline_min": 5 }
 }
 ```
 
-#### Telemetría Periódica:
-```json
-{
-  "event": "telemetry",
-  "device_id": "WATTER-001",
-  "distance_mm": 350.5,
-  "relay_state": false,
-  "timestamp": 1731283210
-}
-```
+Reglas:
 
-#### Ping (Keepalive):
-```json
-{
-  "event": "ping",
-  "device_id": "WATTER-001"
-}
-```
+- 1..8 redes; la primera es obligatoria.
+- En el asistente, dejar el SSID vacío a partir de la segunda red termina la
+  lista (no se guarda).
+- El orden del array es la **prioridad manual** de conexión.
+- El ESP32 es la fuente de verdad de las redes: el panel las consulta y
+  modifica contra el dispositivo, no contra una copia local.
 
----
+### 2.3 Módulos del firmware
 
-### 4.2 De Backend hacia ESP32
+| Módulo | Responsabilidad |
+| --- | --- |
+| `ConfigStore` | Monta LittleFS, valida y guarda `/config.json`; operaciones WiFi |
+| `NetManager` | Escaneo, conexión por prioridad manual, reintentos y estado |
+| `Crypto` | SHA-256 y HMAC-SHA256 con mbedTLS |
+| `DispComm` | WebSocket, handshake, comandos, telemetría y keepalive |
+| `PowerManager` | Deep sleep, temporizador y despertar por botón |
+| `Relay` | Relé activo en LOW y fail-safe local |
+| `I2C` / `HC_SR04` | Pantalla y sensor |
 
-#### Control de Relé (Bomba/Válvula):
-```json
-{
-  "command": "set_relay",
-  "state": true
-}
-```
+### 2.4 Arranque y fail-safe
 
-#### Control de Pantalla LCD (I2C 16x2):
-```json
-{
-  "command": "display",
-  "line0": "Nivel: 78%  39L",
-  "line1": "Bomba: ACTIVA",
-  "clear": true
-}
-```
-
-#### Parámetros de Muestreo:
-```json
-{
-  "command": "config",
-  "sample_interval_ms": 2000
-}
-```
+1. El relé se configura como salida y se fuerza OFF.
+2. Se monta LittleFS y se valida `/config.json`.
+3. Se configura el wake (temporizador + `ext0` en GPIO33).
+4. Se conecta WiFi por prioridad y se abre el WebSocket.
+5. `hello → challenge → auth`. Si no hay `key_hash`, queda `PENDING_CLAIM`.
+6. Se muestrea el sensor y se envía telemetría.
+7. `Relay::guard()` apaga el relé si supera el tiempo máximo encendido o si el
+   backend lleva demasiado tiempo sin autenticar.
 
 ---
 
-## 5. Lógica del Relé (Riego / Llenado Automático)
+## 3. Backend
 
-El backend evalúa las lecturas recibidas:
-1. **Llenado automático habilitado (`auto_refill == True`)**:
-   * Si $\text{Porcentaje} \le \text{Nivel\_Minimo}$ $\rightarrow$ Encender relé (`state = true`), notificar al ESP32 y escribir en LCD: `"Llenando..."`.
-   * Si $\text{Porcentaje} \ge \text{Nivel\_Maximo}$ $\rightarrow$ Apagar relé (`state = false`), notificar al ESP32 y escribir en LCD: `"Tanque Lleno"`.
-   * **Histeresis**: Evita oscilaciones o conmutaciones rápidas cuando el agua se agita.
-   * **Temporizador de seguridad**: Apaga el relé si ha estado encendido más de $N$ minutos continuos para prevenir desbordes por fallas de sensor.
-2. **Control manual**: El usuario puede forzar el encendido/apagado desde el panel web, enviando inmediatamente el comando al ESP32.
+### 3.1 Módulos
+
+| Archivo | Responsabilidad |
+| --- | --- |
+| `backend/main.py` | Router WebSocket, arranque, cierre, origen del panel |
+| `handlers/device_handler.py` | Hello, challenge, auth, claim, telemetría, comandos |
+| `handlers/panel_handler.py` | Login/resume, sync, configuración, acciones, auditoría |
+| `handlers/state.py` | Sockets, nonces, claims, peticiones pendientes |
+| `handlers/access.py` | Autorización por rol y propiedad |
+| `handlers/device_command.py` | Envío de comandos y espera de `ack` |
+| `handlers/wifi_handler.py` | Validación y comandos WiFi |
+| `handlers/device_action.py` | Reboot, sleep y factory reset |
+| `handlers/system_handler.py` | systemd vía `dispwatter-ctl` |
+| `security/auth.py` | Argon2id, JWT, HMAC, rate limit y auditoría |
+| `database/models.py` | `User`, `Device`, `TankConfig`, `DeviceNetwork`, `Telemetry`, `AuditLog` |
+| `database/migrations.py` | Migraciones idempotentes y bootstrap del admin |
+
+### 3.2 Estados del dispositivo
+
+| Estado | Significado |
+| --- | --- |
+| `PENDING_CLAIM` | Conectado, sin `key_hash`; solo telemetría |
+| `CLAIMED` | Vinculado y autenticado; acepta comandos |
+| `BLOCKED` | Rechazado siempre |
+
+### 3.3 Base de datos
+
+- SQLite asíncrono (`aiosqlite` + SQLAlchemy 2).
+- `devices.key_hash` es nullable para permitir `PENDING_CLAIM`.
+- `device_networks` es una caché de SSID/prioridad/RSSI; **no guarda
+  contraseñas**.
+- La telemetría se purga cada 100 escrituras con retención configurable
+  (24 h por defecto).
+- Las migraciones añaden columnas nuevas y, una sola vez, invalidan el esquema
+  de autenticación antiguo (`auth_v2_migrated`).
+
+### 3.4 Lógica del tanque
+
+El backend recibe la distancia bruta y calcula:
+
+```
+H_útil   = D_fondo - D_espejo
+H_actual = D_fondo - D_medida
+%        = clamp(H_actual / H_útil × 100, 0, 100)
+litros   = V_total × % / 100
+```
+
+Llenado automático:
+
+- `% ≤ min_level` y relé apagado → `set_relay(true)` + LCD «Llenando...».
+- `% ≥ max_level` y relé encendido → `set_relay(false)` + LCD «Tanque lleno».
+- Solo se aplica a dispositivos `CLAIMED`.
+
+### 3.5 Acciones de sistema
+
+`system_action` usa `dispwatter-ctl` con una lista blanca de sudoers:
+
+- Reiniciar backend (responde antes de reiniciar).
+- Arrancar/parar/reiniciar panel.
+- Estado de ambos servicios.
+- «Apagar todo»: duerme dispositivos y para el panel; el backend sigue vivo.
+- «Encender todo»: arranca el panel; los dispositivos dormidos despiertan por
+  temporizador o botón.
+- «Reiniciar todo»: reinicia el panel y hace reboot de los dispositivos online.
+
+El backend rechaza `backend/stop`. Para detenerlo: `systemctl stop`.
 
 ---
 
-## 6. Estructura de Software ESP32
+## 4. Panel web
 
-Para mantener [`main.cpp`](file:///home/angedl_/Proyectos/DispWatter/hardware/esp32/main/src/main.cpp) minimalista y fácil de entender:
+Sin framework ni build step: módulos ES nativos.
 
-1. **[`Crypto`](file:///home/angedl_/Proyectos/DispWatter/hardware/esp32/main/Crypto)**:
-   * Hasheo SHA-256 nativo con `mbedtls`.
-   * Generación y verificación de tokens de autenticación.
-2. **[`DispComm`](file:///home/angedl_/Proyectos/DispWatter/hardware/esp32/main/DispComm)**:
-   * Conexión WiFi no bloqueante con reconexión automática.
-   * Conexión WebSocket al servidor central.
-   * Serialización y parseo de JSON mediante `ArduinoJson`.
-   * Registro de callbacks para comandos de Relé y Pantalla LCD.
-3. **[`I2C`](file:///home/angedl_/Proyectos/DispWatter/hardware/esp32/main/I2C)**:
-   * Manejo directo del LCD 16x2.
-4. **[`HC_SR04`](file:///home/angedl_/Proyectos/DispWatter/hardware/esp32/main/HC_SR04)**:
-   * Muestreo ultrasónico con filtro de mediana en mm.
-5. **[`main.cpp`](file:///home/angedl_/Proyectos/DispWatter/hardware/esp32/main/src/main.cpp)**:
-   * Solo conecta los componentes con callbacks limpios.
+| Vista | Contenido |
+| --- | --- |
+| Dashboard | Nivel, litros, distancia, relé, telemetría, vincular dispositivo |
+| Redes WiFi | Lista priorizada, RSSI, añadir/borrar/reordenar, escanear |
+| Dispositivo | Geometría del tanque, reboot, sleep, reset, eliminar |
+| Sistema | Estado y control de servicios, apagar/encender/reiniciar todo |
+| Auditoría | Últimos 250 eventos con filtros |
+
+Características:
+
+- Tema oscuro con acentos neón (cian, verde, magenta, ámbar).
+- Login con JWT y reconexión automática.
+- Los datos dinámicos se insertan con `textContent`.
+- No hay simulación: la telemetría es real. Para desarrollo se puede apuntar a
+  un backend de pruebas con `?backend=host:8765`.
+- El endpoint por defecto es `${location.hostname}:8765`.
 
 ---
 
-## 7. Panel Web Frontend
+## 5. Seguridad (resumen)
 
-Ubicado en [`panel/`](file:///home/angedl_/Proyectos/DispWatter/panel):
-* **Gestión de Dispositivos**: Lista de bebederos vinculados, estado de conexión (Online/Offline) y botón para reclamar un nuevo bebedero con `ID` + `Contraseña`.
-* **Visualización Dinámica del Tanque**: Gráfico de nivel en porcentaje animado y cálculo en litros.
-* **Configuración por Dispositivo**:
-  * Capacidad total (L).
-  * Distancia al fondo ($D_{\text{fondo}}$ en mm).
-  * Distancia al espejo máximo ($D_{\text{espejo}}$ en mm).
-  * Nivel mínimo y máximo de disparo (%).
-  * Interruptor de modo automático.
-* **Consola de Control Manual**: Encendido manual de relé y prueba de texto en pantalla LCD.
+- Usuarios: Argon2id + JWT HS256; roles `admin`/`user`.
+- Dispositivos: challenge-response HMAC-SHA256 con nonce de un solo uso.
+- El ESP32 guarda solo `key_hash`; el panel nunca lo recibe.
+- Las contraseñas WiFi nunca salen del dispositivo/host.
+- Origen del WebSocket del panel validado.
+- Acciones de sistema con sudoers mínimo y sin autoapagado del backend.
+- Auditoría en archivo y BD.
+
+Detalle completo: [`docs/SECURITY.md`](docs/SECURITY.md).
+
+---
+
+## 6. Protocolo (resumen)
+
+- `/ws/device`: `hello → challenge → auth → auth_status`; luego telemetría,
+  estado, ping y `ack`/`wifi_list`.
+- `/ws/panel`: `login`/`resume` en 10 s; luego `sync_all` y mensajes de acción.
+- Comandos al dispositivo: `set_relay`, `display`, `wifi_*`, `reboot`, `sleep`,
+  `factory_reset`.
+
+Detalle completo: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+
+---
+
+## 7. Despliegue
+
+- `deploy/dispwatter-backend.service` — backend con `Restart=always`.
+- `deploy/dispwatter-panel.service` — panel estático en el puerto 3000.
+- `deploy/dispwatter-ctl` — helper cerrado para systemd.
+- `deploy/sudoers.d/dispwatter` — lista blanca de comandos.
+- `deploy/install.sh` — instalación asistida.
+- `deploy/README.md` — guía completa.
+
+Arranque manual para desarrollo: `./start.sh`; parada: `./stop.sh`.
+
+---
+
+## 8. Estructura del repositorio
+
+```
+DispWatter/
+├── backend/
+│   ├── database/          # modelos, conexión y migraciones
+│   ├── handlers/          # dispositivo, panel, WiFi, acciones
+│   ├── security/          # auth.py
+│   ├── main.py
+│   ├── config.py
+│   ├── requirements.txt
+│   └── .env.example
+├── hardware/esp32/main/
+│   ├── src/               # main.cpp, config.h
+│   ├── ConfigStore/
+│   ├── NetManager/
+│   ├── DispComm/
+│   ├── Crypto/
+│   ├── PowerManager/
+│   ├── Relay/
+│   ├── I2C/
+│   ├── HC_SR04/
+│   ├── data/              # config.example.json
+│   └── device_config.example.json
+├── panel/
+│   ├── index.html
+│   ├── css/
+│   ├── js/
+│   └── assets/
+├── deploy/
+├── docs/
+├── scripts/device_config.py
+├── flash.sh
+├── start.sh
+└── stop.sh
+```

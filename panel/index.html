@@ -3,301 +3,368 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DispWatter - Panel de Control & Gestión de Bebederos</title>
+    <meta name="color-scheme" content="dark">
+    <title>DispWatter · Panel de control</title>
+    <link rel="stylesheet" href="css/theme.css">
     <link rel="stylesheet" href="css/styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <!-- Barra Superior -->
-    <header class="navbar">
-        <div class="nav-brand">
-            <div class="logo-icon">💧</div>
-            <div class="brand-text">
-                <h1>DispWatter</h1>
-                <span class="badge">IoT System</span>
-            </div>
-        </div>
-
-        <div class="nav-center">
-            <div class="device-selector-wrapper">
-                <label for="deviceSelect">Dispositivo:</label>
-                <select id="deviceSelect" class="select-input">
-                    <!-- Cargados dinámicamente -->
-                </select>
-                <span id="connStatusBadge" class="status-badge online">Online</span>
-            </div>
-        </div>
-
-        <div class="nav-actions">
-            <button id="btnOpenClaimModal" class="btn btn-primary">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
-                Vincular Dispositivo
-            </button>
-            <div class="user-pill">
-                <span class="user-avatar">👤</span>
-                <span class="user-name">Propietario</span>
-            </div>
-        </div>
-    </header>
-
-    <!-- Contenedor Principal -->
-    <main class="dashboard-container">
-        <!-- Fila Superior: Monitor de Tanque y Estado Rápido -->
-        <section class="dashboard-grid top-grid">
-            <!-- Tarjeta 1: Tanque Visual en Vivo -->
-            <div class="card tank-card">
-                <div class="card-header">
-                    <h2>Nivel del Bebedero en Vivo</h2>
-                    <span class="live-indicator"><span class="pulse-dot"></span> Transmisión continua</span>
+    <!-- ============================ LOGIN ============================ -->
+    <div id="loginScreen" class="login-screen">
+        <form id="loginForm" class="login-card" autocomplete="on">
+            <div class="login-brand">
+                <div class="logo-mark" aria-hidden="true">
+                    <img src="assets/logo.svg" alt="" width="28" height="28">
                 </div>
-                <div class="tank-visualization-wrapper">
-                    <div class="tank-outer">
-                        <div class="tank-ruler">
-                            <span>100%</span>
-                            <span>75%</span>
-                            <span>50%</span>
-                            <span>25%</span>
-                            <span>0%</span>
-                        </div>
-                        <div class="tank-body">
-                            <div class="water-container" id="waterContainer">
-                                <div class="wave wave-back"></div>
-                                <div class="wave wave-front"></div>
-                                <div class="water-fill" id="waterFill" style="height: 65%;"></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="tank-metrics">
-                        <div class="metric-main">
-                            <span class="metric-value" id="waterPercentage">65.0</span>
-                            <span class="metric-unit">%</span>
-                        </div>
-                        <div class="metric-sub">
-                            <span class="label">Volumen Calculado:</span>
-                            <span class="sub-value" id="currentLiters">32.5</span> / <span id="maxLiters">50</span> Litros
-                        </div>
-                        <div class="metric-detail-grid">
-                            <div class="detail-box">
-                                <span class="detail-label">Distancia Sensor</span>
-                                <span class="detail-value" id="currentDistanceMm">380 mm</span>
-                            </div>
-                            <div class="detail-box">
-                                <span class="detail-label">Espejo Máximo</span>
-                                <span class="detail-value" id="mirrorDistanceMm">100 mm</span>
-                            </div>
-                            <div class="detail-box">
-                                <span class="detail-label">Fondo del Tanque</span>
-                                <span class="detail-value" id="bottomDistanceMm">900 mm</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tarjeta 2: Actuadores y Control de Relé (Bomba) -->
-            <div class="card control-card">
-                <div class="card-header">
-                    <h2>Control de Bomba / Relé</h2>
-                    <span id="relayStatusBadge" class="status-badge-lg off">Bomba Inactiva</span>
-                </div>
-
-                <div class="relay-panel">
-                    <div class="relay-state-visual">
-                        <div class="pump-icon-circle" id="pumpIcon">
-                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-                            </svg>
-                        </div>
-                        <div class="pump-info">
-                            <h3 id="relayModeText">Modo Automático</h3>
-                            <p id="relayActionDesc">El relé encenderá cuando el nivel baje del umbral mínimo.</p>
-                        </div>
-                    </div>
-
-                    <div class="control-row">
-                        <span>Forzar Estado Manual:</span>
-                        <div class="btn-group">
-                            <button id="btnRelayOn" class="btn btn-outline-success">Encender</button>
-                            <button id="btnRelayOff" class="btn btn-outline-danger">Apagar</button>
-                        </div>
-                    </div>
-
-                    <hr class="divider">
-
-                    <!-- Control LCD en Vivo -->
-                    <div class="lcd-preview-section">
-                        <h3>Mensaje en Pantalla LCD (16x2)</h3>
-                        <div class="lcd-screen" id="lcdScreen">
-                            <div class="lcd-line" id="lcdLine0">Nivel: 65%  32L</div>
-                            <div class="lcd-line" id="lcdLine1">Bomba: APAGADA</div>
-                        </div>
-                        <div class="lcd-inputs">
-                            <input type="text" id="customLcd0" maxlength="16" placeholder="Línea 0 (máx 16 car)" class="text-input">
-                            <input type="text" id="customLcd1" maxlength="16" placeholder="Línea 1 (máx 16 car)" class="text-input">
-                            <button id="btnSendLcd" class="btn btn-secondary">Actualizar LCD</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Fila Inferior: Configuración Completa del Tanque y Dispositivo -->
-        <section class="card config-card">
-            <div class="card-header">
                 <div>
-                    <h2>Parámetros de Calibración y Riego</h2>
-                    <p class="subtitle">Ajusta los milímetros geométricos y reglas automáticas para este bebedero</p>
+                    <h1 class="brand-title">DispWatter</h1>
+                    <div class="brand-sub">Control de bebederos IoT</div>
                 </div>
-                <button id="btnSaveConfig" class="btn btn-success">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                    Guardar Configuración
+            </div>
+
+            <h2 class="login-title">Acceso al panel</h2>
+            <p class="login-hint">Introduce tus credenciales para gestionar los dispositivos y sus redes.</p>
+
+            <div class="field">
+                <label for="loginUser">Usuario</label>
+                <input id="loginUser" name="username" type="text" autocomplete="username" required>
+            </div>
+            <div class="field" style="margin-top: 14px;">
+                <label for="loginPassword">Contraseña</label>
+                <div class="password-wrap">
+                    <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+                    <button class="password-toggle" type="button" data-toggle-password="loginPassword">Ver</button>
+                </div>
+            </div>
+
+            <p id="loginError" class="login-error" role="alert"></p>
+            <button id="loginSubmit" class="btn btn-primary" type="submit" style="width: 100%; margin-top: 10px;">
+                Entrar
+            </button>
+            <p class="field-hint" style="margin-top: 18px;">
+                El primer administrador se crea desde <span class="mono">backend/.env</span>
+                (ADMIN_USER / ADMIN_PASSWORD). Consulta <span class="mono">deploy/README.md</span>.
+            </p>
+        </form>
+    </div>
+
+    <!-- ============================ APP ============================ -->
+    <div id="appShell" class="app-shell hidden">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="logo-mark" aria-hidden="true">
+                    <img src="assets/logo.svg" alt="" width="22" height="22">
+                </div>
+                <div>
+                    <h1>DispWatter</h1>
+                    <div class="brand-sub">IoT Console</div>
+                </div>
+            </div>
+
+            <nav class="nav" aria-label="Secciones">
+                <button class="nav-item active" data-view="dashboard" type="button">
+                    <span class="nav-icon" aria-hidden="true">◉</span> Dashboard
                 </button>
+                <button class="nav-item" data-view="networks" type="button">
+                    <span class="nav-icon" aria-hidden="true">≋</span> Redes WiFi
+                </button>
+                <button class="nav-item" data-view="device" type="button">
+                    <span class="nav-icon" aria-hidden="true">⚙</span> Dispositivo
+                </button>
+                <button class="nav-item" data-view="system" type="button">
+                    <span class="nav-icon" aria-hidden="true">▤</span> Sistema
+                </button>
+                <button class="nav-item" data-view="audit" type="button">
+                    <span class="nav-icon" aria-hidden="true">⌁</span> Auditoría
+                </button>
+            </nav>
+
+            <div class="sidebar-foot">
+                <div>Backend: <span id="backendEndpoint" class="mono">—</span></div>
+                <div>v1.0 · ESP32</div>
             </div>
+        </aside>
 
-            <form id="tankConfigForm" class="config-grid">
-                <!-- Columna 1: Geometría -->
-                <div class="config-group">
-                    <h3>📐 Geometría del Tanque</h3>
-                    
-                    <div class="form-item">
-                        <label for="cfgCapacity">Capacidad Total del Contenedor (Litros):</label>
-                        <div class="input-with-unit">
-                            <input type="number" id="cfgCapacity" value="50" min="1" step="0.5" required>
-                            <span class="unit">L</span>
+        <div class="main">
+            <header class="topbar">
+                <h1 id="viewTitle" class="topbar-title">Dashboard</h1>
+
+                <div class="topbar-controls">
+                    <label class="eyebrow" for="deviceSelect">Dispositivo</label>
+                    <select id="deviceSelect" class="select-inline" aria-label="Seleccionar dispositivo">
+                        <option value="">Sin dispositivos</option>
+                    </select>
+
+                    <span id="connStatusBadge" class="badge offline">
+                        <span class="dot"></span><span id="connStatusText">Desconectado</span>
+                    </span>
+
+                    <span class="user-chip">
+                        <span id="userName">—</span>
+                        <span id="userRole" class="user-role">—</span>
+                    </span>
+
+                    <button id="btnLogout" class="btn btn-ghost btn-sm" type="button">Salir</button>
+                </div>
+            </header>
+
+            <main class="content">
+                <!-- ==================== DASHBOARD ==================== -->
+                <section id="view-dashboard" class="view">
+                    <div class="section-title">
+                        <h2>Estado del bebedero</h2>
+                        <span id="deviceClaimBadge" class="badge pending"><span class="dot"></span><span>Sin datos</span></span>
+                    </div>
+
+                    <div class="card-grid grid-4">
+                        <div class="metric">
+                            <div class="metric-label">Nivel de agua</div>
+                            <div class="metric-value cyan"><span id="waterPercent">—</span><span class="metric-unit">%</span></div>
                         </div>
-                        <small>Volumen útil con el tanque lleno.</small>
-                    </div>
-
-                    <div class="form-item">
-                        <label for="cfgBottomDist">Distancia al Fondo Vacío (D<sub>fondo</sub>):</label>
-                        <div class="input-with-unit">
-                            <input type="number" id="cfgBottomDist" value="900" min="50" step="1" required>
-                            <span class="unit">mm</span>
+                        <div class="metric">
+                            <div class="metric-label">Volumen</div>
+                            <div class="metric-value green"><span id="waterLiters">—</span><span class="metric-unit">L</span></div>
                         </div>
-                        <small>Distancia desde el sensor hasta la base cuando no hay agua.</small>
-                    </div>
-
-                    <div class="form-item">
-                        <label for="cfgMirrorDist">Distancia al Espejo Máximo (D<sub>espejo</sub>):</label>
-                        <div class="input-with-unit">
-                            <input type="number" id="cfgMirrorDist" value="100" min="20" step="1" required>
-                            <span class="unit">mm</span>
+                        <div class="metric">
+                            <div class="metric-label">Distancia</div>
+                            <div class="metric-value"><span id="currentDist">—</span><span class="metric-unit">mm</span></div>
                         </div>
-                        <small>Distancia de seguridad para evitar que el agua toque el sensor.</small>
-                    </div>
-                </div>
-
-                <!-- Columna 2: Reglas de Automatización -->
-                <div class="config-group">
-                    <h3>⚡ Reglas de Automatización de Riego/Llenado</h3>
-
-                    <div class="form-item switch-item">
-                        <label for="cfgAutoRefill">Llenado / Riego Automático Activado:</label>
-                        <label class="switch">
-                            <input type="checkbox" id="cfgAutoRefill" checked>
-                            <span class="slider round"></span>
-                        </label>
-                    </div>
-
-                    <div class="form-item">
-                        <label for="cfgMinLevel">Umbral Mínimo de Activación (Bomba ON):</label>
-                        <div class="input-with-unit">
-                            <input type="number" id="cfgMinLevel" value="25" min="5" max="90" required>
-                            <span class="unit">%</span>
+                        <div class="metric">
+                            <div class="metric-label">Relé / bomba</div>
+                            <div class="metric-value magenta" id="relayValue">OFF</div>
                         </div>
-                        <small>Cuando el agua baje de este porcentaje, el relé se activará.</small>
                     </div>
 
-                    <div class="form-item">
-                        <label for="cfgMaxLevel">Umbral Máximo de Corte (Bomba OFF):</label>
-                        <div class="input-with-unit">
-                            <input type="number" id="cfgMaxLevel" value="90" min="20" max="100" required>
-                            <span class="unit">%</span>
+                    <div class="dashboard-grid">
+                        <div class="card tank-wrap">
+                            <div class="tank" role="img" aria-label="Nivel del depósito" id="tank">
+                                <div class="tank-fill" id="tankFill" style="height: 0%;"></div>
+                                <div class="tank-readout">
+                                    <div class="tank-percent" id="tankPercent">—%</div>
+                                    <div class="tank-caption">Nivel</div>
+                                </div>
+                            </div>
+                            <div class="btn-row" style="justify-content: center;">
+                                <button id="btnRelayOn" class="btn btn-ghost" type="button">Encender bomba</button>
+                                <button id="btnRelayOff" class="btn btn-danger" type="button">Apagar bomba</button>
+                            </div>
                         </div>
-                        <small>Al alcanzar este nivel, el relé se apagará automáticamente.</small>
-                    </div>
-                </div>
 
-                <!-- Columna 3: Información de Seguridad del Dispositivo -->
-                <div class="config-group">
-                    <h3>🔒 Identidad del Hardware</h3>
-                    
-                    <div class="form-item">
-                        <label>ID del Dispositivo:</label>
-                        <input type="text" id="infoDeviceId" class="mono-input" readonly value="WATTER-001">
-                    </div>
-
-                    <div class="form-item">
-                        <label>Nombre y Ubicación:</label>
-                        <input type="text" id="infoDeviceNameLoc" readonly value="Bebedero Huerto (Patio Principal)">
-                    </div>
-
-                    <div class="form-item">
-                        <label>Versión de Firmware:</label>
-                        <input type="text" id="infoDeviceFw" class="mono-input" readonly value="v1.0.0">
+                        <div class="card">
+                            <div class="card-head">
+                                <h2>Telemetría y conexión</h2>
+                                <button id="btnOpenClaimModal" class="btn btn-ghost btn-sm" type="button">Vincular dispositivo</button>
+                            </div>
+                            <div class="status-list">
+                                <div class="status-row"><span class="status-label">Estado</span><span class="status-value" id="infoOnline">—</span></div>
+                                <div class="status-row"><span class="status-label">Señal WiFi</span><span class="status-value" id="infoRssi">—</span></div>
+                                <div class="status-row"><span class="status-label">Dirección IP</span><span class="status-value" id="infoIp">—</span></div>
+                                <div class="status-row"><span class="status-label">Uptime</span><span class="status-value" id="infoUptime">—</span></div>
+                                <div class="status-row"><span class="status-label">Firmware</span><span class="status-value" id="infoFirmware">—</span></div>
+                                <div class="status-row"><span class="status-label">Último despertar</span><span class="status-value" id="infoWake">—</span></div>
+                                <div class="status-row"><span class="status-label">Ubicación</span><span class="status-value" id="infoLocation">—</span></div>
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="form-item">
-                        <label>Hash de Credencial (SHA-256):</label>
-                        <input type="text" id="infoDeviceHash" class="mono-input hash-text" readonly value="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855">
-                        <small>Clave criptográfica verificada por el backend.</small>
+                    <div class="notice info">
+                        <span aria-hidden="true">◈</span>
+                        <span>Las contraseñas WiFi nunca se muestran ni se envían al navegador. El dispositivo es la fuente de verdad de las redes.</span>
+                    </div>
+                </section>
+
+                <!-- ==================== NETWORKS ==================== -->
+                <section id="view-networks" class="view hidden">
+                    <div class="section-title">
+                        <h2>Redes WiFi</h2>
+                        <span class="section-sub">Prioridad manual: se intentan en el orden mostrado.</span>
                     </div>
 
-                    <div class="form-item">
-                        <label>Estado de Posesión:</label>
-                        <span class="badge-claimed" id="claimStatusText">✓ Reclamado por ti</span>
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Redes guardadas</h2>
+                            <button id="btnScanWifi" class="btn btn-ghost btn-sm" type="button">Escanear / refrescar</button>
+                        </div>
+                        <div id="networkList" class="network-list">
+                            <div class="empty-state">Selecciona un dispositivo para consultar sus redes.</div>
+                        </div>
                     </div>
-                </div>
-            </form>
-        </section>
-    </main>
 
-    <!-- Modal para Tomar Posesión / Vincular Dispositivo -->
-    <div class="modal-backdrop" id="claimModal" style="display: none;">
-        <div class="modal-card">
-            <div class="modal-header">
-                <div class="modal-title">
-                    <span class="modal-icon">🔐</span>
-                    <h2>Tomar Posesión de un Dispositivo</h2>
-                </div>
-                <button class="btn-close" id="btnCloseClaimModal">&times;</button>
-            </div>
-            
-            <form id="claimDeviceForm">
-                <p class="modal-intro">
-                    Ingresa el ID y la Contraseña configurada en el firmware del ESP32. 
-                    El backend validará el hash criptográfico y asignará este dispositivo a tu cuenta.
-                </p>
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Añadir red</h2>
+                        </div>
+                        <form id="wifiAddForm" class="form-grid">
+                            <div class="field">
+                                <label for="wifiSsid">SSID</label>
+                                <input id="wifiSsid" name="ssid" type="text" maxlength="31" required>
+                            </div>
+                            <div class="field">
+                                <label for="wifiPassword">Contraseña</label>
+                                <div class="password-wrap">
+                                    <input id="wifiPassword" name="password" type="password" maxlength="63" autocomplete="new-password">
+                                    <button class="password-toggle" type="button" data-toggle-password="wifiPassword">Ver</button>
+                                </div>
+                                <span class="field-hint">Vacío = red abierta. Si no, entre 8 y 63 caracteres.</span>
+                            </div>
+                            <div class="btn-row" style="grid-column: 1 / -1;">
+                                <button class="btn btn-primary" type="submit">Guardar red</button>
+                            </div>
+                        </form>
+                    </div>
 
-                <div class="form-item">
-                    <label for="claimDeviceId">ID del Dispositivo (Flasheado en ESP32):</label>
-                    <input type="text" id="claimDeviceId" placeholder="Ej: WATTER-001" required class="mono-input">
-                </div>
+                    <div class="notice">
+                        <span aria-hidden="true">⚠</span>
+                        <span>Al borrar la red conectada, el dispositivo intentará la siguiente en la lista. La primera red es obligatoria.</span>
+                    </div>
+                </section>
 
-                <div class="form-item">
-                    <label for="claimDevicePass">Contraseña del Dispositivo:</label>
-                    <input type="password" id="claimDevicePass" placeholder="Clave secreta asignada" required>
-                </div>
+                <!-- ==================== DEVICE ==================== -->
+                <section id="view-device" class="view hidden">
+                    <div class="section-title">
+                        <h2>Dispositivo</h2>
+                        <span class="section-sub">Configuración del tanque y acciones remotas.</span>
+                    </div>
 
-                <div class="form-item">
-                    <label for="claimDeviceName">Nombre Personalizado para el Panel:</label>
-                    <input type="text" id="claimDeviceName" placeholder="Ej: Bebedero Huerto Principal" required>
-                </div>
+                    <div class="card">
+                        <div class="card-head"><h2>Geometría y niveles</h2></div>
+                        <form id="tankConfigForm" class="form-grid">
+                            <div class="field">
+                                <label for="cfgCapacity">Capacidad (L)</label>
+                                <input id="cfgCapacity" name="capacity" type="number" step="0.1" min="0.1" required>
+                            </div>
+                            <div class="field">
+                                <label for="cfgBottomDist">Distancia al fondo (mm)</label>
+                                <input id="cfgBottomDist" name="bottom_dist_mm" type="number" step="1" min="10" required>
+                            </div>
+                            <div class="field">
+                                <label for="cfgMirrorDist">Distancia al espejo (mm)</label>
+                                <input id="cfgMirrorDist" name="mirror_dist_mm" type="number" step="1" min="0" required>
+                            </div>
+                            <div class="field">
+                                <label for="cfgMinLevel">Nivel mínimo (%)</label>
+                                <input id="cfgMinLevel" name="min_level" type="number" step="1" min="0" max="100" required>
+                            </div>
+                            <div class="field">
+                                <label for="cfgMaxLevel">Nivel máximo (%)</label>
+                                <input id="cfgMaxLevel" name="max_level" type="number" step="1" min="0" max="100" required>
+                            </div>
+                            <div class="check-row">
+                                <input id="cfgAutoRefill" name="auto_refill" type="checkbox">
+                                <label for="cfgAutoRefill">Llenado automático</label>
+                            </div>
+                            <div class="btn-row" style="grid-column: 1 / -1;">
+                                <button class="btn btn-primary" type="submit">Guardar configuración</button>
+                            </div>
+                        </form>
+                    </div>
 
-                <div class="modal-actions">
-                    <button type="button" class="btn btn-secondary" id="btnCancelClaim">Cancelar</button>
-                    <button type="submit" class="btn btn-primary" id="btnSubmitClaim">Vincular y Reclamar</button>
-                </div>
-            </form>
+                    <div class="card">
+                        <div class="card-head"><h2>Acciones remotas</h2></div>
+                        <div class="form-grid">
+                            <div class="field">
+                                <label for="sleepMinutes">Minutos de deep sleep</label>
+                                <input id="sleepMinutes" type="number" min="1" max="1440" value="60">
+                            </div>
+                            <div class="check-row" style="padding-top: 0;">
+                                <span class="field-hint">El relé se apaga antes de reiniciar o dormir.</span>
+                            </div>
+                        </div>
+                        <div class="btn-row" style="margin-top: 16px;">
+                            <button id="btnReboot" class="btn btn-ghost" type="button">Reiniciar ESP32</button>
+                            <button id="btnSleep" class="btn btn-ghost" type="button">Dormir</button>
+                            <button id="btnFactoryReset" class="btn btn-magenta" type="button">Reset de fábrica</button>
+                            <button id="btnDeleteDevice" class="btn btn-danger" type="button">Eliminar del panel</button>
+                        </div>
+                    </div>
+
+                    <div class="notice">
+                        <span aria-hidden="true">⚠</span>
+                        <span>El reset de fábrica borra <span class="mono">/config.json</span> del ESP32 y exige reflashear o reconfigurar. Requiere rol administrador.</span>
+                    </div>
+                </section>
+
+                <!-- ==================== SYSTEM ==================== -->
+                <section id="view-system" class="view hidden">
+                    <div class="section-title">
+                        <h2>Sistema</h2>
+                        <span class="section-sub">Servicios del servidor. El backend nunca se detiene desde el panel.</span>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Servicios</h2>
+                            <button id="btnSystemStatus" class="btn btn-ghost btn-sm" type="button">Consultar estado</button>
+                        </div>
+                        <div class="btn-row">
+                            <button id="btnBackendRestart" class="btn btn-ghost" type="button">Reiniciar backend</button>
+                            <button id="btnPanelRestart" class="btn btn-ghost" type="button">Reiniciar panel</button>
+                            <button id="btnPanelStop" class="btn btn-danger" type="button">Detener panel</button>
+                        </div>
+                        <div class="btn-row" style="margin-top: 12px;">
+                            <button id="btnAllStop" class="btn btn-danger" type="button">Apagar todo (panel + dormir dispositivos)</button>
+                            <button id="btnAllStart" class="btn btn-ghost" type="button">Encender todo</button>
+                            <button id="btnAllRestart" class="btn btn-ghost" type="button">Reiniciar todo</button>
+                        </div>
+                        <pre id="systemOutput" class="system-output" style="margin-top: 16px;">Sin información. Pulsa «Consultar estado».</pre>
+                    </div>
+
+                    <div class="notice">
+                        <span aria-hidden="true">⚠</span>
+                        <span>«Apagar todo» detiene el panel y pone los dispositivos en deep sleep, pero mantiene el backend vivo para poder recuperar el sistema. Los dispositivos dormidos solo despiertan por temporizador o botón físico.</span>
+                    </div>
+                </section>
+
+                <!-- ==================== AUDIT ==================== -->
+                <section id="view-audit" class="view hidden">
+                    <div class="section-title">
+                        <h2>Auditoría</h2>
+                        <span class="section-sub">Últimos 250 eventos del sistema.</span>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Registro</h2>
+                            <button id="btnRefreshAudit" class="btn btn-ghost btn-sm" type="button">Actualizar</button>
+                        </div>
+                        <div class="form-grid" style="margin-bottom: 16px;">
+                            <div class="field">
+                                <label for="auditFilterAction">Filtrar por acción</label>
+                                <input id="auditFilterAction" type="text" placeholder="LOGIN, WIFI, DEVICE…">
+                            </div>
+                            <div class="field">
+                                <label for="auditFilterDevice">Filtrar por dispositivo</label>
+                                <input id="auditFilterDevice" type="text" placeholder="WATTER-001">
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Fecha</th>
+                                        <th>Acción</th>
+                                        <th>Usuario</th>
+                                        <th>Dispositivo</th>
+                                        <th>Detalle</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="auditBody">
+                                    <tr><td colspan="5" class="empty-state">Sin eventos cargados.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </main>
         </div>
     </div>
 
-    <!-- Notificaciones Flotantes (Toasts) -->
-    <div id="toastContainer" class="toast-container"></div>
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
+    <div id="modalRoot"></div>
 
-    <script src="js/app.js"></script>
+    <script type="module" src="js/app.js"></script>
 </body>
 </html>

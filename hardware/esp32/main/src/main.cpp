@@ -1,22 +1,147 @@
 #include <Arduino.h>
-#include <I2C.h>
-#include "HC_SR04.h"
+
 #include <Crypto.h>
 #include <DispComm.h>
+#include <I2C.h>
+
+#include "HC_SR04.h"
 #include "config.h"
+#include "ConfigStore.h"
+#include "NetManager.h"
+#include "PowerManager.h"
+#include "Relay.h"
 
 // ==========================================
 // MÓDULOS DEL DISPOSITIVO
 // ==========================================
 I2C lcd(LCD_I2C_ADDR);
 HC_SR04 sensor(PIN_TRIG, PIN_ECHO, 5);
-Crypto crypto(DEVICE_ID, DEVICE_PASS);
-DispComm comm(crypto);
 
-// Variables de Control y Temporización
-bool servidorConectado = false;
-unsigned long ultimoIntento = 0;
-unsigned long ultimoMuestreo = 0;
+ConfigStore configStore;
+NetManager net(configStore);
+Crypto crypto;
+DispComm comm(crypto, configStore, net);
+Relay relay;
+PowerManager power;
+
+// ==========================================
+// ESTADO Y TEMPORIZACIÓN
+// ==========================================
+unsigned long lastSample = 0;
+unsigned long lastLcdRefresh = 0;
+unsigned long lastStatus = 0;
+unsigned long displayOverrideUntil = 0;
+
+float lastDistanceMm = -1.0f;
+bool backendAuthenticated = false;
+bool configReady = false;
+
+// ==========================================
+// UTILIDADES DE PANTALLA
+// ==========================================
+String padLine(const String& text) {
+    String out = text;
+    if (out.length() > LCD_COLS) {
+        out = out.substring(0, LCD_COLS);
+    }
+    while (out.length() < LCD_COLS) {
+        out += ' ';
+    }
+    return out;
+}
+
+void showLines(const String& line0, const String& line1) {
+    lcd.print(0, 0, padLine(line0));
+    lcd.print(0, 1, padLine(line1));
+}
+
+void refreshLcd() {
+    if (millis() < displayOverrideUntil) {
+        return;
+    }
+
+    const DeviceConfig& cfg = configStore.get();
+
+    if (!configReady) {
+        showLines("Config invalida", "Revisa /config");
+        return;
+    }
+
+    if (comm.isPendingClaim()) {
+        showLines("Pendiente vinc.", cfg.deviceId);
+        return;
+    }
+
+    if (!net.isConnected()) {
+        showLines("Buscando WiFi", cfg.deviceId);
+        return;
+    }
+
+    if (!backendAuthenticated) {
+        showLines("Conectando...", net.connectedSSID());
+        return;
+    }
+
+    String line1;
+    if (lastDistanceMm > 0.0f) {
+        line1 = String(lastDistanceMm / 10.0f, 1);
+        line1 += " cm ";
+    } else {
+        line1 = "---- cm ";
+    }
+    line1 += relay.state() ? "RELE ON" : "RELE OFF";
+
+    showLines("Servidor OK", line1);
+}
+
+// ==========================================
+// CALLBACKS
+// ==========================================
+void onRelayCommand(bool state) {
+    relay.set(state);
+    Serial.printf("[RELE] Estado: %s\n", state ? "ENCENDIDO" : "APAGADO");
+}
+
+void onDisplayCommand(const String& line0, const String& line1, bool clear) {
+    if (clear) {
+        lcd.clean();
+    }
+    if (line0.length() > 0) {
+        lcd.print(0, 0, padLine(line0));
+    }
+    if (line1.length() > 0) {
+        lcd.print(0, 1, padLine(line1));
+    }
+    displayOverrideUntil = millis() + 10000;
+}
+
+void onConnectionStatus(bool isConnected) {
+    backendAuthenticated = isConnected;
+    lastLcdRefresh = 0;
+    Serial.printf("[WS] %s\n", isConnected ? "Autenticado" : "Sin autenticar");
+}
+
+void onReboot() {
+    relay.forceOff();
+    Serial.println("[SYS] Reinicio solicitado desde el panel");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+}
+
+void onSleep(uint16_t minutes) {
+    relay.forceOff();
+    power.sleepForMinutes(minutes);
+}
+
+void onFactoryReset() {
+    relay.forceOff();
+    configStore.factoryReset();
+    Serial.println("[SYS] Reset de fabrica solicitado desde el panel");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+}
 
 // ==========================================
 // SETUP
@@ -25,109 +150,84 @@ void setup() {
     Serial.begin(115200);
     delay(200);
 
-    // 1. Inicializar Relé en estado apagado
-    pinMode(PIN_RELE, OUTPUT);
-    digitalWrite(PIN_RELE, RELE_OFF);
+    // Relé apagado antes que cualquier otra cosa.
+    relay.begin(PIN_RELE, RELE_ON == LOW);
 
-    // 2. Inicializar Pantalla LCD y Sensor
     lcd.init();
     lcd.onn();
     lcd.clean();
-    lcd.print(0, 0, DEVICE_NAME);
-    lcd.print(0, 1, String("v") + FIRMWARE_VERSION + " Init");
+    showLines("DispWatter", "Iniciando...");
+
+    configReady = configStore.begin();
+    power.begin(configStore.get().wakePin, configStore.get().wakeActiveLow);
+
+    if (!configReady) {
+        Serial.printf("[CONFIG] %s\n", configStore.lastError().c_str());
+        showLines("Config invalida", "Revisa /config");
+        return;
+    }
+
+    crypto.setKeyHash(configStore.get().keyHash);
+    comm.setWakeReason(power.wakeReasonString());
+
+    Serial.printf("[CONFIG] Dispositivo %s (%s)\n",
+                  configStore.get().deviceId.c_str(),
+                  configStore.get().deviceName.c_str());
+    Serial.printf("[POWER] Motivo de arranque: %s\n",
+                  power.wakeReasonString().c_str());
+
     sensor.init();
-    delay(1200);
+    net.begin();
 
-    // 3. Asignar metadatos del dispositivo para el handshake
-    comm.setDeviceInfo(DEVICE_NAME, DEVICE_LOCATION, FIRMWARE_VERSION);
+    comm.onRelayCommand(onRelayCommand);
+    comm.onDisplayCommand(onDisplayCommand);
+    comm.onConnectionStatus(onConnectionStatus);
+    comm.onReboot(onReboot);
+    comm.onSleep(onSleep);
+    comm.onFactoryReset(onFactoryReset);
+    comm.begin();
 
-    // 4. Mostrar estado inicial de búsqueda de WiFi
-    lcd.clean();
-    lcd.print(0, 0, "Buscando WiFi...");
-    lcd.print(0, 1, String(NUM_WIFI_NETWORKS) + " redes config.");
-
-    // 5. Registrar Callbacks de Comunicación
-    // Callback: Orden de Relé enviada por el Backend
-    comm.onRelayCommand([](bool state) {
-        digitalWrite(PIN_RELE, state ? RELE_ON : RELE_OFF);
-        Serial.printf("[RELE] Estado: %s\n", state ? "ENCENDIDO" : "APAGADO");
-    });
-
-    // Callback: Texto remoto para LCD enviado por el Backend
-    comm.onDisplayCommand([](const String &line0, const String &line1, bool clear) {
-        if (servidorConectado) {
-            if (clear) lcd.clean();
-            if (line0.length() > 0) {
-                lcd.clean(0);
-                lcd.print(0, 0, line0);
-            }
-            if (line1.length() > 0) {
-                lcd.clean(1);
-                lcd.print(0, 1, line1);
-            }
-        }
-    });
-
-    // Callback: Cambio de estado de conexión con el Servidor Backend
-    comm.onConnectionStatus([](bool isConnected) {
-        servidorConectado = isConnected;
-        lcd.clean();
-
-        if (isConnected) {
-            Serial.println("[WS] ¡Conectado y Autenticado con éxito en Backend!");
-            lcd.print(0, 0, "Servidor Conect.");
-            lcd.print(0, 1, String("ID: ") + DEVICE_ID);
-        } else {
-            Serial.println("[WS] Servidor no conectado. Esperando vinculación...");
-            lcd.print(0, 0, "Servidor no conn");
-            lcd.print(0, 1, String("ID: ") + DEVICE_ID);
-        }
-    });
-
-    // 6. Iniciar la conexión con la lista de redes WiFi
-    comm.begin(WIFI_NETWORKS, NUM_WIFI_NETWORKS, BACKEND_HOST, BACKEND_PORT, BACKEND_PATH);
+    showLines("Buscando WiFi", configStore.get().deviceId);
 }
 
 // ==========================================
 // LOOP PRINCIPAL
 // ==========================================
 void loop() {
-    // Atender tareas de red y WebSocket
+    if (!configReady) {
+        delay(2000);
+        return;
+    }
+
+    net.update();
     comm.update();
 
-    unsigned long ahora = millis();
+    const unsigned long now = millis();
+    const DeviceConfig& cfg = configStore.get();
 
-    // Gestión periódica de estados de conexión (cada INTERVALO_REINTENTO_MS)
-    if (ahora - ultimoIntento >= INTERVALO_REINTENTO_MS) {
-        ultimoIntento = ahora;
+    // Fail-safe: tiempo máximo encendido y pérdida prolongada de backend.
+    relay.guard(now, comm.lastAuthenticatedMs(),
+                static_cast<unsigned long>(cfg.maxRelayOnMin) * 60000UL,
+                static_cast<unsigned long>(cfg.maxOfflineMin) * 60000UL);
 
-        if (!comm.isWiFiConnected()) {
-            Serial.println("[WIFI] Buscando redes disponibles...");
-            lcd.clean(0);
-            lcd.print(0, 0, "Buscando WiFi...");
-            lcd.clean(1);
-            lcd.print(0, 1, "Sin conexion");
-        } else if (!servidorConectado) {
-            String connectedSSID = comm.getConnectedSSID();
-            Serial.printf("[WIFI] Conectado a '%s'. Reintentando ws://%s:%d%s | Dispositivo ID: %s\n",
-                          connectedSSID.c_str(), BACKEND_HOST, BACKEND_PORT, BACKEND_PATH, DEVICE_ID);
-            lcd.clean(0);
-            lcd.print(0, 0, "Servidor no conn");
-            lcd.clean(1);
-            lcd.print(0, 1, String("ID: ") + DEVICE_ID);
+    if (now - lastSample >= cfg.sampleIntervalMs) {
+        lastSample = now;
+        const float distance = sensor.getMm();
+        if (distance > 0.0f) {
+            lastDistanceMm = distance;
+            comm.sendTelemetry(distance, relay.state());
         }
     }
 
-    // Muestreo ultrasónico y telemetría hacia el Backend (cada INTERVALO_MUESTREO_MS)
-    if (servidorConectado && (ahora - ultimoMuestreo >= INTERVALO_MUESTREO_MS)) {
-        ultimoMuestreo = ahora;
-
-        float distanciaMm = sensor.getMm();
-        bool releActivo = (digitalRead(PIN_RELE) == RELE_ON);
-
-        if (distanciaMm > 0) {
-            comm.sendTelemetry(distanciaMm, releActivo);
-            Serial.printf("[TELEMETRIA] Distancia: %.1f mm | Rele: %d\n", distanciaMm, releActivo);
-        }
+    if (now - lastStatus >= 60000UL) {
+        lastStatus = now;
+        comm.sendDeviceStatus();
     }
+
+    if (now - lastLcdRefresh >= 1000UL) {
+        lastLcdRefresh = now;
+        refreshLcd();
+    }
+
+    delay(5);
 }

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# DispWatter - control limitado de servicios para el panel
+# Instalar en /usr/local/bin/dispwatter-ctl (root:root, 0755)
+# ==============================================================================
+set -Eeuo pipefail
+
+BACKEND_UNIT="dispwatter-backend.service"
+PANEL_UNIT="dispwatter-panel.service"
+
+usage() {
+    cat <<'EOF'
+Uso: dispwatter-ctl <comando>
+
+Comandos:
+  backend-start      Arranca el backend (normalmente ya está activo)
+  backend-stop       Detiene el backend (solo CLI/root, nunca desde el panel)
+  backend-restart    Reinicia el backend
+  panel-start        Arranca el panel web
+  panel-stop         Detiene el panel web
+  panel-restart      Reinicia el panel web
+  status             Muestra el estado de ambos servicios
+EOF
+}
+
+run_systemctl() {
+    systemctl "$@"
+}
+
+case "${1:-}" in
+    backend-start)
+        run_systemctl start "$BACKEND_UNIT"
+        ;;
+    backend-stop)
+        # Prohibido desde el panel; disponible para administración manual.
+        run_systemctl stop "$BACKEND_UNIT"
+        ;;
+    backend-restart)
+        run_systemctl restart "$BACKEND_UNIT"
+        ;;
+    panel-start)
+        run_systemctl start "$PANEL_UNIT"
+        ;;
+    panel-stop)
+        run_systemctl stop "$PANEL_UNIT"
+        ;;
+    panel-restart)
+        run_systemctl restart "$PANEL_UNIT"
+        ;;
+    status)
+        printf '== %s ==\n' "$BACKEND_UNIT"
+        systemctl is-active "$BACKEND_UNIT" || true
+        systemctl status --no-pager --lines=5 "$BACKEND_UNIT" || true
+        printf '\n== %s ==\n' "$PANEL_UNIT"
+        systemctl is-active "$PANEL_UNIT" || true
+        systemctl status --no-pager --lines=5 "$PANEL_UNIT" || true
+        ;;
+    -h|--help|help|"")
+        usage
+        ;;
+    *)
+        echo "Comando no permitido: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

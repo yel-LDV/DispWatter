@@ -22,15 +22,24 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 async def init_db() -> None:
-    """Crea todas las tablas si no existen."""
+    """Crea todas las tablas si no existen y aplica migraciones."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    from backend.database.migrations import run_migrations
+
+    await run_migrations()
 
 async def reset_db() -> None:
     """Elimina todas las tablas y las vuelve a crear."""
     async with engine.begin() as conn:
+        await conn.exec_driver_sql("DROP TABLE IF EXISTS schema_meta")
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+
+    from backend.database.migrations import run_migrations
+
+    await run_migrations()
 
 @asynccontextmanager
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

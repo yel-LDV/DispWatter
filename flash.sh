@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# DispWatter - Script Interactivo de Configuración y Flasheo para ESP32
+# DispWatter - Configuración y flasheo de ESP32
 # ==============================================================================
-
-set -e
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Colores de interfaz
+PIO_PROJECT="$SCRIPT_DIR/hardware/esp32/main"
+HOST_CONFIG="$PIO_PROJECT/device_config.json"
+DEVICE_CONFIG="$PIO_PROJECT/data/config.json"
+CONFIG_HELPER="$SCRIPT_DIR/scripts/device_config.py"
+
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
@@ -19,9 +22,7 @@ NC='\033[0m'
 
 LOGS_DIR="$SCRIPT_DIR/logs"
 AUDIT_LOG_FILE="$LOGS_DIR/audit.log"
-CONFIG_FILE="$SCRIPT_DIR/hardware/esp32/main/src/config.h"
-
-mkdir -p "$LOGS_DIR"
+mkdir -p "$LOGS_DIR" "$PIO_PROJECT/data"
 
 log_audit() {
     local action="$1"
@@ -31,161 +32,207 @@ log_audit() {
     echo "[$now_iso] [AUDIT] [$action] Actor=$(whoami) Details=$details" >> "$AUDIT_LOG_FILE"
 }
 
+die() {
+    echo -e "\n${RED}[ERROR]${NC} $*" >&2
+    exit 1
+}
+
+info() { echo -e "${CYAN}$*${NC}"; }
+ok()   { echo -e "${GREEN}[OK]${NC} $*"; }
+warn() { echo -e "${YELLOW}[AVISO]${NC} $*"; }
+
+usage() {
+    cat <<'EOF'
+Uso: ./flash.sh [opciones]
+
+Opciones:
+  --build-only        Compila el firmware sin subirlo.
+  --non-interactive   Usa device_config.json tal cual, sin preguntas
+                      (conserva la config del ESP32 salvo --reset-config).
+  --reset-config      Fuerza la subida de data/config.json al ESP32.
+  --fresh             Ignora la configuración del host y la recrea.
+  -h, --help          Muestra esta ayuda.
+
+Por defecto:
+  - La primera vez crea hardware/esp32/main/device_config.json.
+  - Las siguientes veces pregunta si se conserva la config del ESP32.
+  - Las redes WiFi se guardan en orden de prioridad (la primera manda).
+EOF
+}
+
+BUILD_ONLY=0
+NON_INTERACTIVE=0
+RESET_CONFIG=0
+FRESH=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --build-only) BUILD_ONLY=1 ;;
+        --non-interactive) NON_INTERACTIVE=1 ;;
+        --reset-config) RESET_CONFIG=1 ;;
+        --fresh) FRESH=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "Opción desconocida: $1 (usa --help)" ;;
+    esac
+    shift
+done
+
+# ------------------------------------------------------------------------------
+# Detección de entorno
+# ------------------------------------------------------------------------------
+detect_ip() {
+    local ip=""
+    if command -v ip >/dev/null 2>&1; then
+        ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+    fi
+    if [ -z "$ip" ]; then
+        ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    fi
+    printf '%s' "${ip:-192.168.1.100}"
+}
+
+check_dependencies() {
+    command -v python3 >/dev/null 2>&1 || die "Falta python3."
+    command -v pio >/dev/null 2>&1 || die "Falta PlatformIO (pio). Instálalo antes de flashear."
+    [ -f "$CONFIG_HELPER" ] || die "No se encuentra $CONFIG_HELPER"
+}
+
+detect_ports() {
+    local -a ports=()
+    while IFS= read -r port; do
+        [ -n "$port" ] && ports+=("$port")
+    done < <(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true)
+    if [ ${#ports[@]} -gt 0 ]; then
+        printf '%s\n' "${ports[@]}"
+    fi
+}
+
+validate_serial_port() {
+    local port="$1"
+    [ -e "$port" ] || die "El puerto $port no existe."
+    [ -w "$port" ] || die "Sin permisos de escritura en $port. Añade tu usuario al grupo dialout/uucp o ejecuta: sudo chmod a+rw $port"
+}
+
+# ------------------------------------------------------------------------------
+# Inicio
+# ------------------------------------------------------------------------------
 echo -e "\n${BLUE}================================================================${NC}"
-echo -e "${BLUE}${BOLD}      💧 DISPWATTER - ASISTENTE DE FLASHEO PARA ESP32           ${NC}"
-echo -e "${BLUE}================================================================${NC}"
-echo -e "Este script configurará las credenciales en el firmware, compilará"
-echo -e "el proyecto y lo subirá por USB a tu placa ESP32.\n"
+echo -e "${BLUE}${BOLD}      DISPWATTER - CONFIGURACIÓN Y FLASHEO DEL ESP32             ${NC}"
+echo -e "${BLUE}================================================================${NC}\n"
 
-# 1. Detección automática de IP local
-DETECTED_IP="$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1 || true)"
-[ -z "$DETECTED_IP" ] && DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[ -z "$DETECTED_IP" ] && DETECTED_IP="192.168.1.100"
+check_dependencies
 
-# 2. Detección automática de puerto serie
-DETECTED_PORTS=( $(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true) )
+DETECTED_IP="$(detect_ip)"
+HAD_CONFIG=0
+[ -f "$HOST_CONFIG" ] && HAD_CONFIG=1
+
+if [ "$BUILD_ONLY" -eq 1 ] && [ ! -f "$HOST_CONFIG" ]; then
+    die "Modo --build-only requiere una configuración existente en $HOST_CONFIG"
+fi
+
+# ------------------------------------------------------------------------------
+# Configuración (device_config.json)
+# ------------------------------------------------------------------------------
+CONFIGURE_ARGS=(configure --file "$HOST_CONFIG" --default-host "$DETECTED_IP")
+[ "$NON_INTERACTIVE" -eq 1 ] && CONFIGURE_ARGS+=(--non-interactive)
+[ "$FRESH" -eq 1 ] && CONFIGURE_ARGS+=(--reset)
+
+if [ "$BUILD_ONLY" -eq 0 ] || [ "$HAD_CONFIG" -eq 0 ]; then
+    python3 "$CONFIG_HELPER" "${CONFIGURE_ARGS[@]}"
+else
+    python3 "$CONFIG_HELPER" validate --file "$HOST_CONFIG"
+fi
+
+# ------------------------------------------------------------------------------
+# Decisión de sembrar la configuración del dispositivo
+# ------------------------------------------------------------------------------
+SEED_DEVICE=0
+if [ "$HAD_CONFIG" -eq 0 ] || [ "$FRESH" -eq 1 ]; then
+    SEED_DEVICE=1
+elif [ "$RESET_CONFIG" -eq 1 ]; then
+    SEED_DEVICE=1
+elif [ "$BUILD_ONLY" -eq 0 ] && [ "$NON_INTERACTIVE" -eq 0 ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        die "python3 es necesario para leer la configuración."
+    fi
+    echo ""
+    echo -e "${YELLOW}La configuración del ESP32 puede contener redes añadidas desde el panel.${NC}"
+    read -rp "¿Sobrescribirla con la configuración de este PC? (s/N): " SEED_ANSWER
+    if [[ "$SEED_ANSWER" =~ ^[sSyY]$ ]]; then
+        SEED_DEVICE=1
+    fi
+fi
+
+if [ "$SEED_DEVICE" -eq 1 ]; then
+    python3 "$CONFIG_HELPER" to-device --input "$HOST_CONFIG" --output "$DEVICE_CONFIG"
+    ok "Configuración del dispositivo generada: $DEVICE_CONFIG"
+else
+    info "Se conservará la configuración actual del ESP32 (no se sube LittleFS)."
+fi
+
+# ------------------------------------------------------------------------------
+# Compilación
+# ------------------------------------------------------------------------------
+echo ""
+info "-> Compilando firmware con PlatformIO..."
+log_audit "FLASH_ESP32_START" "Config=$HOST_CONFIG SeedDevice=$SEED_DEVICE"
+
+if ! pio run -d "$PIO_PROJECT"; then
+    log_audit "BUILD_ESP32_FAILED" "Config=$HOST_CONFIG"
+    die "La compilación falló. Revisa la salida anterior."
+fi
+ok "Compilación completada."
+log_audit "BUILD_ESP32_SUCCESS" "Config=$HOST_CONFIG"
+
+if [ "$BUILD_ONLY" -eq 1 ]; then
+    echo -e "\n${GREEN}Modo --build-only completado.${NC}\n"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# Puerto serie
+# ------------------------------------------------------------------------------
+mapfile -t DETECTED_PORTS < <(detect_ports)
 DEFAULT_PORT="/dev/ttyUSB0"
 if [ ${#DETECTED_PORTS[@]} -gt 0 ]; then
     DEFAULT_PORT="${DETECTED_PORTS[0]}"
-fi
-
-# ==========================================
-# RECOPILACIÓN DE DATOS (INTERACTIVA)
-# ==========================================
-echo -e "${CYAN}${BOLD}[1/4] Red WiFi${NC}"
-read -rp "  Nombre de red (SSID) [MiWiFi]: " INPUT_SSID
-WIFI_SSID="${INPUT_SSID:-MiWiFi}"
-
-read -rsp "  Contraseña de WiFi [dejar vacio si es abierta]: " INPUT_PASS
-echo ""
-WIFI_PASS="${INPUT_PASS:-}"
-
-echo -e "\n${CYAN}${BOLD}[2/4] Servidor Backend${NC}"
-read -rp "  Dirección IP del Backend [$DETECTED_IP]: " INPUT_HOST
-BACKEND_HOST="${INPUT_HOST:-$DETECTED_IP}"
-
-read -rp "  Puerto WebSocket del Backend [8765]: " INPUT_PORT
-BACKEND_PORT="${INPUT_PORT:-8765}"
-
-echo -e "\n${CYAN}${BOLD}[3/4] Identidad y Metadatos del Dispositivo${NC}"
-read -rp "  ID Único del Bebedero [WATTER-001]: " INPUT_DEV_ID
-DEVICE_ID="${INPUT_DEV_ID:-WATTER-001}"
-
-read -rp "  Nombre del Bebedero [Bebedero Huerto]: " INPUT_DEV_NAME
-DEVICE_NAME="${INPUT_DEV_NAME:-Bebedero Huerto}"
-
-read -rp "  Ubicación o Zona [Patio Principal]: " INPUT_DEV_LOC
-DEVICE_LOCATION="${INPUT_DEV_LOC:-Patio Principal}"
-
-read -rp "  Versión de Firmware [1.0.0]: " INPUT_DEV_VER
-FIRMWARE_VERSION="${INPUT_DEV_VER:-1.0.0}"
-
-read -rp "  Contraseña Secreta del Dispositivo [clave_secreta_99]: " INPUT_DEV_PASS
-DEVICE_PASS="${INPUT_DEV_PASS:-clave_secreta_99}"
-
-echo -e "\n${CYAN}${BOLD}[4/4] Puerto USB / Serie${NC}"
-if [ ${#DETECTED_PORTS[@]} -gt 0 ]; then
     echo -e "  Puertos detectados: ${GREEN}${DETECTED_PORTS[*]}${NC}"
 fi
-read -rp "  Puerto para flashear [$DEFAULT_PORT]: " INPUT_SERIAL
-SERIAL_PORT="${INPUT_SERIAL:-$DEFAULT_PORT}"
+read -rp "  Puerto para flashear [$DEFAULT_PORT]: " INPUT_PORT
+SERIAL_PORT="${INPUT_PORT:-$DEFAULT_PORT}"
+validate_serial_port "$SERIAL_PORT"
 
-# ==========================================
-# CONFIRMACIÓN Y GENERACIÓN DE CONFIG.H
-# ==========================================
-echo -e "\n${YELLOW}----------------------------------------------------------------${NC}"
-echo -e "${BOLD}Resumen de configuración a flashear:${NC}"
-echo -e "  • SSID WiFi:             ${GREEN}$WIFI_SSID${NC}"
-echo -e "  • Backend WebSocket:     ${GREEN}ws://$BACKEND_HOST:$BACKEND_PORT/ws/device${NC}"
-echo -e "  • Dispositivo ID:        ${GREEN}$DEVICE_ID${NC}"
-echo -e "  • Nombre:                ${GREEN}$DEVICE_NAME${NC}"
-echo -e "  • Ubicación:             ${GREEN}$DEVICE_LOCATION${NC}"
-echo -e "  • Firmware:              ${GREEN}v$FIRMWARE_VERSION${NC}"
-echo -e "  • Clave Secreta:         ${GREEN}********${NC}"
-echo -e "  • Puerto de subida:      ${GREEN}$SERIAL_PORT${NC}"
-echo -e "${YELLOW}----------------------------------------------------------------${NC}"
-
-read -rp "¿Deseas compilar y flashear ahora al ESP32? (S/n): " CONFIRM
-if [[ "$CONFIRM" =~ ^[nN] ]]; then
-    echo -e "\nOperación cancelada. No se modificó el hardware."
-    exit 0
+# ------------------------------------------------------------------------------
+# Subida
+# ------------------------------------------------------------------------------
+echo ""
+info "-> Subiendo firmware a $SERIAL_PORT..."
+if ! pio run -d "$PIO_PROJECT" --target upload --upload-port "$SERIAL_PORT"; then
+    log_audit "FLASH_ESP32_FAILED" "Port=$SERIAL_PORT Config=$HOST_CONFIG"
+    die "Falló la subida del firmware. Verifica el cable USB y los permisos."
 fi
 
-echo -e "\n-> Escribiendo configuración en $CONFIG_FILE..."
-cat <<EOF > "$CONFIG_FILE"
-#ifndef DEVICE_CONFIG_H
-#define DEVICE_CONFIG_H
-
-// ==========================================
-// CONFIGURACIÓN GENERADA AUTOMÁTICAMENTE
-// ==========================================
-#define WIFI_SSID          "$WIFI_SSID"
-#define WIFI_PASS          "$WIFI_PASS"
-
-#define BACKEND_HOST       "$BACKEND_HOST"
-#define BACKEND_PORT       $BACKEND_PORT
-#define BACKEND_PATH       "/ws/device"
-
-#define DEVICE_ID          "$DEVICE_ID"
-#define DEVICE_PASS        "$DEVICE_PASS"
-#define DEVICE_NAME        "$DEVICE_NAME"
-#define DEVICE_LOCATION    "$DEVICE_LOCATION"
-#define FIRMWARE_VERSION   "$FIRMWARE_VERSION"
-
-#define PIN_TRIG           5
-#define PIN_ECHO           18
-#define PIN_RELE           4
-#define LCD_I2C_ADDR       0x27
-
-#define RELE_ON            LOW
-#define RELE_OFF           HIGH
-
-#define INTERVALO_MUESTREO_MS  2000
-#define INTERVALO_REINTENTO_MS 5000
-
-#endif // DEVICE_CONFIG_H
-EOF
-
-echo -e "   [${GREEN}OK${NC}] Configuración inyectada con éxito."
-
-# ==========================================
-# COMPILACIÓN Y SUBIDA
-# ==========================================
-echo -e "\n-> Compilando firmware con PlatformIO..."
-log_audit "FLASH_ESP32_START" "DeviceID=$DEVICE_ID Host=$BACKEND_HOST:$BACKEND_PORT Port=$SERIAL_PORT"
-
-pio run -d hardware/esp32/main
-
-if [ "$1" == "--build-only" ]; then
-    echo -e "\n[${GREEN}OK${NC}] Modo build-only completado. Binario listo."
-    log_audit "BUILD_ESP32_SUCCESS" "DeviceID=$DEVICE_ID (Solo compilación)"
-    exit 0
+if [ "$SEED_DEVICE" -eq 1 ]; then
+    echo ""
+    info "-> Subiendo configuración (LittleFS)..."
+    if ! pio run -d "$PIO_PROJECT" --target uploadfs --upload-port "$SERIAL_PORT"; then
+        log_audit "FLASH_ESP32_FAILED" "Port=$SERIAL_PORT Stage=uploadfs"
+        die "Falló la subida de LittleFS. El firmware está flasheado, pero sin configuración."
+    fi
+    ok "Configuración subida al ESP32."
 fi
 
-echo -e "\n-> Subiendo firmware a $SERIAL_PORT..."
-if pio run -d hardware/esp32/main --target upload --upload-port "$SERIAL_PORT"; then
-    echo -e "\n${GREEN}================================================================${NC}"
-    echo -e "${GREEN}${BOLD}       ✔ ¡ESP32 FLASHEADO Y LISTO PARA OPERAR!                  ${NC}"
-    echo -e "${GREEN}================================================================${NC}"
-    log_audit "FLASH_ESP32_SUCCESS" "DeviceID=$DEVICE_ID Port=$SERIAL_PORT"
+log_audit "FLASH_ESP32_SUCCESS" "Port=$SERIAL_PORT Config=$HOST_CONFIG SeedDevice=$SEED_DEVICE"
 
-    echo -e "\n${BOLD}Comportamiento de la pantalla LCD en tu ESP32:${NC}"
-    echo -e "  1. Al arrancar:            ${BLUE}\"DispWatter / Iniciando...\"${NC}"
-    echo -e "  2. Conectando a red:       ${BLUE}\"Conectando WiFi / $WIFI_SSID\"${NC}"
-    echo -e "  3. Antes de vincular:      ${YELLOW}\"Servidor no conn / ID: $DEVICE_ID\"${NC}"
-    echo -e "  4. Cada 5 segundos:        Reintentará conectar automáticamente al backend."
-    echo -e "  5. Al conectar al backend: ${GREEN}\"Servidor Conect. / ID: $DEVICE_ID\"${NC}"
-    echo -e "\n${BOLD}👉 Pasos para tomar posesión en el Panel Web:${NC}"
-    echo -e "  1. Inicia el sistema con:  ${YELLOW}./start.sh${NC}"
-    echo -e "  2. Entra en tu navegador a: ${CYAN}http://localhost:3000${NC}"
-    echo -e "  3. Haz clic en el botón:   ${BOLD}\"Vincular Dispositivo\"${NC}"
-    echo -e "  4. Introduce tu ID:        ${GREEN}$DEVICE_ID${NC}"
-    echo -e "  5. Introduce tu Clave:     ${GREEN}$DEVICE_PASS${NC}"
-    echo -e "================================================================\n"
+echo -e "\n${GREEN}================================================================${NC}"
+echo -e "${GREEN}${BOLD}       ESP32 FLASHEADO Y LISTO PARA OPERAR                       ${NC}"
+echo -e "${GREEN}================================================================${NC}"
+if [ "$SEED_DEVICE" -eq 1 ]; then
+    echo -e "  Configuración: ${GREEN}subida (LittleFS)${NC}"
 else
-    echo -e "\n${RED}[ERROR]${NC} Falló la subida por USB a $SERIAL_PORT."
-    echo -e "Verifica que el cable USB esté bien conectado y que tu usuario tenga permisos (dialout/uucp)."
-    echo -e "Comando para dar permisos de puerto:  sudo chmod a+rw $SERIAL_PORT"
-    log_audit "FLASH_ESP32_FAILED" "DeviceID=$DEVICE_ID Port=$SERIAL_PORT"
-    exit 1
+    echo -e "  Configuración: ${GREEN}conservada del dispositivo${NC}"
 fi
+echo -e "  Backend:       ${BLUE}ws://<host>:8765/ws/device${NC}"
+echo -e "  Panel:         ${BLUE}http://localhost:3000${NC}"
+echo -e "\n  Para vincular el dispositivo necesitas el secreto guardado en:"
+echo -e "  ${CYAN}$HOST_CONFIG${NC} (campo device.claim_secret)\n"

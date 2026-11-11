@@ -1,0 +1,17 @@
+# ==============================================================================
+# DispWatter - reglas sudo mínimas para el backend
+# Instalar en /etc/sudoers.d/dispwatter (root:root, 0440)
+#
+# El backend ejecuta `sudo -n /usr/local/bin/dispwatter-ctl ...` para
+# reiniciar/parar el panel y consultar el estado. Nunca puede detener el
+# backend: `backend-stop` no aparece aquí y el handler lo rechaza igualmente.
+#
+# Sustituye `angedl_` por el usuario que ejecuta el servicio
+# dispwatter-backend.service si es distinto.
+# ==============================================================================
+
+angedl_ ALL=(root) NOPASSWD: /usr/local/bin/dispwatter-ctl backend-restart
+angedl_ ALL=(root) NOPASSWD: /usr/local/bin/dispwatter-ctl panel-start
+angedl_ ALL=(root) NOPASSWD: /usr/local/bin/dispwatter-ctl panel-stop
+angedl_ ALL=(root) NOPASSWD: /usr/local/bin/dispwatter-ctl panel-restart
+angedl_ ALL=(root) NOPASSWD: /usr/local/bin/dispwatter-ctl status

@@ -1,64 +1,210 @@
+"""Autenticación de usuarios y dispositivos DispWatter.
+
+- Usuarios: contraseñas con Argon2id y sesiones JWT (HS256).
+- Dispositivos: challenge-response HMAC-SHA256 con nonce de un solo uso.
+- Auditoría: archivo de texto + tabla audit_logs.
+"""
+from __future__ import annotations
+
 import hashlib
+import hmac
+import ipaddress
+import logging
 import time
-import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlparse
+
+import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
+
 from backend.config import settings
 from backend.database.connect import get_db
 from backend.database.models import AuditLog
 
-def hash_credentials(device_id: str, device_pass: str) -> str:
-    """Calcula el hash SHA-256 de las credenciales del dispositivo."""
-    raw = f"{device_id}:{device_pass}".encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+logger = logging.getLogger("DispWatter.Auth")
 
-def generate_handshake_token(device_key_hash: str, timestamp: int) -> str:
-    """Genera el token dinámico con timestamp esperado del hardware."""
-    raw = f"{device_key_hash}:{timestamp}".encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+_password_hasher = PasswordHasher()
 
-def verify_device_token(device_key_hash: str, token: str, timestamp: int, tolerance_sec: int = 300) -> bool:
-    """Verifica si el token generado por el ESP32 es válido y no ha expirado."""
-    if not device_key_hash or not token:
+
+# ---------------------------------------------------------------------------
+# Contraseñas de usuario
+# ---------------------------------------------------------------------------
+def hash_password(password: str) -> str:
+    return _password_hasher.hash(password)
+
+
+def verify_password(password_hash: str, password: str) -> bool:
+    if not password_hash or not password:
         return False
-    
-    # Tolerancia de tiempo (5 minutos por defecto para desfases de reloj en ESP32)
-    current_time = int(time.time())
-    if abs(current_time - timestamp) > tolerance_sec:
-        # Nota: si el ESP32 no tiene NTP sincronizado y envía tiempo relativo (millis / 1000),
-        # podemos verificar la consistencia del hash directo
-        expected = generate_handshake_token(device_key_hash, timestamp)
-        return expected.lower() == token.lower()
+    try:
+        return bool(_password_hasher.verify(password_hash, password))
+    except (VerifyMismatchError, InvalidHashError, ValueError):
+        return False
+    except Exception:  # nunca filtrar detalles de argon2 al cliente
+        logger.exception("Error verificando contraseña")
+        return False
 
-    expected = generate_handshake_token(device_key_hash, timestamp)
-    return expected.lower() == token.lower()
 
-async def record_audit(action: str, device_id: Optional[str] = None, actor: str = "SYSTEM", details: Optional[str] = None):
+def needs_rehash(password_hash: str) -> bool:
+    try:
+        return _password_hasher.check_needs_rehash(password_hash)
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# JWT
+# ---------------------------------------------------------------------------
+def create_token(user_id: str, role: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "role": role,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(hours=settings.JWT_EXPIRE_HOURS)).timestamp()),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_token(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["sub", "exp"]},
+        )
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+    if not payload.get("sub"):
+        return None
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Dispositivos
+# ---------------------------------------------------------------------------
+def hash_credentials(device_id: str, device_secret: str) -> str:
+    """SHA256(id:secreto). Es el key_hash que guarda el ESP32."""
+    raw = f"{device_id}:{device_secret}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def compute_device_proof(key_hash: str, nonce: str) -> str:
+    """HMAC-SHA256 usando el key_hash hexadecimal como clave (igual que el ESP32)."""
+    return hmac.new(
+        key_hash.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def verify_device_proof(key_hash: str, nonce: str, proof: str) -> bool:
+    if not key_hash or not nonce or not proof:
+        return False
+    expected = compute_device_proof(key_hash, nonce)
+    return hmac.compare_digest(expected, proof.lower())
+
+
+# ---------------------------------------------------------------------------
+# Origen del WebSocket del panel
+# ---------------------------------------------------------------------------
+def is_origin_allowed(origin: Optional[str]) -> bool:
+    """Valida el header Origin del panel.
+
+    - Sin Origin (clientes de línea de comandos) se permite.
+    - Si PANEL_ORIGINS contiene "*" se permite cualquiera.
+    - Se permiten orígenes loopback o de red privada en el puerto del panel,
+      para poder abrir el panel desde otro equipo de la LAN.
     """
-    Registra un evento de auditoría tanto en el archivo de texto audit.log
-    como en la base de datos relacional para persistencia y consulta.
-    """
+    if not origin:
+        return True
+    allowed = settings.PANEL_ORIGINS_LIST
+    normalized = origin.rstrip("/")
+    if "*" in allowed or normalized in allowed:
+        return True
+
+    parsed = urlparse(normalized)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if parsed.port != settings.PANEL_PORT:
+        return False
+    host = parsed.hostname or ""
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback
+    except ValueError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Auditoría
+# ---------------------------------------------------------------------------
+async def record_audit(
+    action: str,
+    device_id: Optional[str] = None,
+    actor: str = "SYSTEM",
+    details: Optional[str] = None,
+) -> None:
     now_iso = datetime.now().isoformat()
-    log_line = f"[{now_iso}] [AUDIT] [{action}] Actor={actor} Device={device_id or 'N/A'} Details={details or ''}\n"
+    log_line = (
+        f"[{now_iso}] [AUDIT] [{action}] Actor={actor} "
+        f"Device={device_id or 'N/A'} Details={details or ''}\n"
+    )
 
-    # 1. Escritura en archivo audit.log
     try:
         settings.AUDIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(settings.AUDIT_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(log_line)
-    except Exception as e:
-        print(f"Error escribiendo en audit.log: {e}")
+        with open(settings.AUDIT_LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(log_line)
+    except Exception as exc:
+        logger.warning("No se pudo escribir audit.log: %s", exc)
 
-    # 2. Persistencia en Base de Datos
     try:
         async with get_db() as session:
-            audit_entry = AuditLog(
-                action=action,
-                device_id=device_id,
-                actor=actor,
-                details=details
+            session.add(
+                AuditLog(
+                    action=action,
+                    device_id=device_id,
+                    actor=actor,
+                    details=details,
+                )
             )
-            session.add(audit_entry)
             await session.commit()
-    except Exception as e:
-        print(f"Error guardando auditoría en BD: {e}")
+    except Exception as exc:
+        logger.warning("No se pudo guardar auditoría en BD: %s", exc)
+
+
+class LoginRateLimiter:
+    """Límite simple en memoria: N intentos por ventana y por IP."""
+
+    def __init__(self, max_attempts: int, window_seconds: int):
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self._attempts: dict[str, list[float]] = {}
+
+    def _prune(self, key: str, now: float) -> None:
+        cutoff = now - self.window_seconds
+        entries = [ts for ts in self._attempts.get(key, []) if ts >= cutoff]
+        if entries:
+            self._attempts[key] = entries
+        else:
+            self._attempts.pop(key, None)
+
+    def is_blocked(self, key: str) -> bool:
+        now = time.monotonic()
+        self._prune(key, now)
+        return len(self._attempts.get(key, [])) >= self.max_attempts
+
+    def register_failure(self, key: str) -> None:
+        now = time.monotonic()
+        self._prune(key, now)
+        self._attempts.setdefault(key, []).append(now)
+
+    def reset(self, key: str) -> None:
+        self._attempts.pop(key, None)

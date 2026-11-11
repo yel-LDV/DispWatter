@@ -3,36 +3,28 @@
 
 #include <Arduino.h>
 
+/**
+ * Utilidades criptográficas del dispositivo.
+ *
+ * El ESP32 no guarda la contraseña de vinculación: solo el hash
+ * SHA256(device_id:claim_secret). La autenticación usa HMAC-SHA256
+ * con un nonce enviado por el backend.
+ */
 class Crypto {
 public:
     Crypto();
-    Crypto(const String &deviceId, const String &devicePass, const String &ownerId = "UNCLAIMED");
 
-    void setCredentials(const String &deviceId, const String &devicePass, const String &ownerId = "UNCLAIMED");
+    void setKeyHash(const String& keyHash);
+    const String& getKeyHash() const { return _keyHash; }
+    bool hasKey() const { return _keyHash.length() == 64; }
 
-    // Hashea un string cualquiera en formato hexadecimal
-    static String sha256(const String &payload);
+    static String sha256(const String& payload);
+    static String hmacSha256Hex(const String& key, const String& message);
 
-    // Obtiene el hash persistente de las credenciales del dispositivo (ID + Contraseña)
-    String getDeviceKeyHash() const;
-
-    // Genera un token de autenticación dinámico con timestamp: SHA256(DeviceKeyHash + ":" + timestamp)
-    String createAuthToken(uint32_t timestamp) const;
-
-    // Verifica si un token recibido coincide con las credenciales esperadas para un timestamp dado
-    bool verifyAuthToken(const String &receivedToken, uint32_t timestamp) const;
-
-    String getDeviceId() const { return _deviceId; }
-    String getOwnerId() const { return _ownerId; }
-    void setOwnerId(const String &ownerId) { _ownerId = ownerId; }
+    String createAuthProof(const String& nonce) const;
 
 private:
-    String _deviceId;
-    String _devicePass;
-    String _ownerId;
-    String _deviceKeyHash;
-
-    void _computeDeviceKeyHash();
+    String _keyHash;
 };
 
 #endif // CRYPTO_H

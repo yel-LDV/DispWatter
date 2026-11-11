@@ -1,82 +1,83 @@
 #include "DispComm.h"
 
-DispComm::DispComm(Crypto &crypto)
-    : _crypto(crypto),
-      _wsHost(nullptr),
-      _wsPort(80),
-      _wsPath("/ws/device"),
-      _name("Bebedero DispWatter"),
-      _location("Sin ubicación"),
-      _fwVersion("1.0.0"),
-      _wsConnected(false),
-      _isAuthenticated(false),
-      _lastWiFiCheck(0),
-      _lastPingTime(0),
-      _relayCb(nullptr),
-      _displayCb(nullptr),
-      _connCb(nullptr) {}
+DispComm::DispComm(Crypto& crypto, ConfigStore& config, NetManager& net)
+    : _crypto(crypto), _config(config), _net(net) {}
 
-void DispComm::begin(const WiFiCred *networks, size_t networkCount,
-                     const char *wsHost, uint16_t wsPort, const char *wsPath) {
-    _wsHost = wsHost;
-    _wsPort = wsPort;
-    _wsPath = wsPath;
+void DispComm::begin() {
+    const DeviceConfig& cfg = _config.get();
 
-    WiFi.mode(WIFI_STA);
-    for (size_t i = 0; i < networkCount; i++) {
-        if (networks[i].ssid && strlen(networks[i].ssid) > 0) {
-            _wifiMulti.addAP(networks[i].ssid, networks[i].pass);
-        }
+    if (cfg.backendTls) {
+        _ws.beginSSL(cfg.backendHost.c_str(), cfg.backendPort,
+                     cfg.backendPath.c_str());
+    } else {
+        _ws.begin(cfg.backendHost.c_str(), cfg.backendPort,
+                  cfg.backendPath.c_str());
     }
 
-    _webSocket.begin(_wsHost, _wsPort, _wsPath);
-    _webSocket.onEvent([this](WStype_t type, uint8_t *payload, size_t length) {
-        this->_handleWebSocketEvent(type, payload, length);
+    _ws.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
+        this->_handleEvent(type, payload, length);
     });
-    _webSocket.setReconnectInterval(5000);
-}
+    _ws.setReconnectInterval(5000);
 
-void DispComm::begin(const char *ssid, const char *password,
-                     const char *wsHost, uint16_t wsPort, const char *wsPath) {
-    WiFiCred single[1] = {{ssid, password}};
-    begin(single, 1, wsHost, wsPort, wsPath);
+    Serial.printf("[WS] Backend %s:%u%s\n", cfg.backendHost.c_str(),
+                  cfg.backendPort, cfg.backendPath.c_str());
 }
 
 void DispComm::update() {
-    _checkWiFi();
-    if (WiFi.status() == WL_CONNECTED) {
-        _webSocket.loop();
+    if (!_net.isConnected()) {
+        if (_wsConnected) {
+            _ws.disconnect();
+        }
+        return;
+    }
 
-        // Enviar ping cada 30 segundos si está autenticado
-        if (_wsConnected && _isAuthenticated && (millis() - _lastPingTime > 30000)) {
-            sendPing();
-            _lastPingTime = millis();
+    _ws.loop();
+
+    if (_wsConnected && _state != AuthState::Disconnected &&
+        _state != AuthState::Authenticated && _state != AuthState::PendingClaim) {
+        if (millis() - _connectedAt > 12000) {
+            Serial.println("[WS] Timeout esperando challenge/auth_status");
+            _ws.disconnect();
         }
     }
-}
 
-void DispComm::_checkWiFi() {
-    if (millis() - _lastWiFiCheck > 2000) {
-        _lastWiFiCheck = millis();
-        _wifiMulti.run();
+    if (isAuthenticated() && millis() - _lastPing > 30000) {
+        sendPing();
+        _lastPing = millis();
     }
 }
 
-void DispComm::_handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
+void DispComm::_handleEvent(WStype_t type, uint8_t* payload, size_t length) {
+    (void)length;
+
     switch (type) {
         case WStype_DISCONNECTED:
             _wsConnected = false;
-            _isAuthenticated = false;
-            if (_connCb) _connCb(false);
+            _setState(AuthState::Disconnected);
+            Serial.println("[WS] Desconectado del backend");
             break;
 
-        case WStype_CONNECTED:
+        case WStype_CONNECTED: {
             _wsConnected = true;
-            _sendAuthHandshake();
+            _connectedAt = millis();
+            _setState(AuthState::AwaitChallenge);
+
+            StaticJsonDocument<320> hello;
+            hello["event"] = "hello";
+            hello["device_id"] = _config.get().deviceId;
+            hello["firmware"] = _config.get().firmware;
+            _sendJson(hello);
+
+            Serial.println("[WS] Conectado; esperando challenge");
             break;
+        }
 
         case WStype_TEXT:
-            _parseIncomingJson((const char *)payload);
+            _handleJson(reinterpret_cast<const char*>(payload));
+            break;
+
+        case WStype_ERROR:
+            Serial.println("[WS] Error de WebSocket");
             break;
 
         default:
@@ -84,79 +85,254 @@ void DispComm::_handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t len
     }
 }
 
-void DispComm::_sendAuthHandshake() {
-    uint32_t ts = millis() / 1000;
-    String token = _crypto.createAuthToken(ts);
+void DispComm::_setState(AuthState state) {
+    if (_state == state) {
+        return;
+    }
+    _state = state;
 
-    StaticJsonDocument<384> doc;
-    doc["event"] = "auth";
-    doc["device_id"] = _crypto.getDeviceId();
-    doc["token"] = token;
-    doc["timestamp"] = ts;
-    if (_name) doc["name"] = _name;
-    if (_location) doc["location"] = _location;
-    if (_fwVersion) doc["firmware_version"] = _fwVersion;
+    if (state == AuthState::Authenticated) {
+        _lastAuthMs = millis();
+        Serial.println("[WS] Autenticado con el backend");
+    }
 
-    String output;
-    serializeJson(doc, output);
-    _webSocket.sendTXT(output);
+    _notifyConnection();
 }
 
-void DispComm::_parseIncomingJson(const char *jsonStr) {
-    StaticJsonDocument<512> doc;
-    DeserializationError err = deserializeJson(doc, jsonStr);
-    if (err) return;
+void DispComm::_notifyConnection() {
+    if (_connCb) {
+        _connCb(_state == AuthState::Authenticated);
+    }
+}
 
-    // Verificar respuesta de autenticación
-    if (doc.containsKey("auth_status")) {
-        const char *status = doc["auth_status"];
-        if (strcmp(status, "ok") == 0) {
-            _isAuthenticated = true;
-            if (_connCb) _connCb(true);
-        } else {
-            _isAuthenticated = false;
-            if (_connCb) _connCb(false);
-        }
+void DispComm::_sendAuth(const String& nonce) {
+    const String proof = _crypto.createAuthProof(nonce);
+    if (proof.length() != 64) {
+        Serial.println("[WS] No se pudo calcular el proof HMAC");
+        _ws.disconnect();
+        return;
     }
 
-    // Comandos de control enviados por el backend
-    if (doc.containsKey("command")) {
-        const char *cmd = doc["command"];
+    const DeviceConfig& cfg = _config.get();
+    StaticJsonDocument<768> doc;
+    doc["event"] = "auth";
+    doc["device_id"] = cfg.deviceId;
+    doc["nonce"] = nonce;
+    doc["proof"] = proof;
+    doc["name"] = cfg.deviceName;
+    doc["location"] = cfg.location;
+    doc["firmware"] = cfg.firmware;
+    doc["wake_reason"] = _wakeReason;
 
-        if (strcmp(cmd, "set_relay") == 0 && _relayCb) {
-            bool state = doc["state"].as<bool>();
+    _setState(AuthState::Authenticating);
+    _sendJson(doc);
+}
+
+void DispComm::_handleJson(const char* json) {
+    DynamicJsonDocument doc(2048);
+    const DeserializationError error = deserializeJson(doc, json);
+    if (error) {
+        Serial.printf("[WS] JSON invalido: %s\n", error.c_str());
+        return;
+    }
+
+    const String event = doc["event"] | "";
+
+    if (event == "challenge") {
+        const String nonce = doc["nonce"] | "";
+        if (nonce.length() == 0) {
+            _ws.disconnect();
+            return;
+        }
+        _sendAuth(nonce);
+        return;
+    }
+
+    if (event == "auth_status") {
+        const String status = doc["status"] | "";
+        if (status == "ok") {
+            _setState(AuthState::Authenticated);
+            sendDeviceStatus();
+        } else if (status == "pending_claim") {
+            _setState(AuthState::PendingClaim);
+            sendDeviceStatus();
+        } else {
+            Serial.printf("[WS] Autenticacion rechazada: %s\n", status.c_str());
+            _ws.disconnect();
+        }
+        return;
+    }
+
+    if (doc.containsKey("command")) {
+        _handleCommand(doc);
+        return;
+    }
+
+    if (event == "pong") {
+        return;
+    }
+}
+
+void DispComm::_handleCommand(JsonDocument& doc) {
+    const String command = doc["command"] | "";
+    const String requestId = doc["request_id"] | "";
+
+    if (!isAuthenticated()) {
+        if (requestId.length() > 0) {
+            ack(requestId, false, "unauthorized");
+        }
+        return;
+    }
+
+    if (command == "set_relay") {
+        const bool state = doc["state"] | false;
+        if (_relayCb) {
             _relayCb(state);
-        } else if (strcmp(cmd, "display") == 0 && _displayCb) {
-            String line0 = doc["line0"] | "";
-            String line1 = doc["line1"] | "";
-            bool clear = doc["clear"] | false;
+        }
+        ack(requestId, true);
+        return;
+    }
+
+    if (command == "display") {
+        const String line0 = doc["line0"] | "";
+        const String line1 = doc["line1"] | "";
+        const bool clear = doc["clear"] | false;
+        if (_displayCb) {
             _displayCb(line0, line1, clear);
         }
+        ack(requestId, true);
+        return;
     }
+
+    if (command == "wifi_list") {
+        const String networks = _net.networksJson();
+        DynamicJsonDocument response(4600);
+        response["event"] = "wifi_list";
+        response["request_id"] = requestId;
+
+        DynamicJsonDocument array(4096);
+        if (!deserializeJson(array, networks)) {
+            response["networks"] = array.as<JsonArray>();
+        } else {
+            response["networks"] = serialized("[]");
+        }
+        _sendJson(response);
+        return;
+    }
+
+    if (command == "wifi_add") {
+        const String ssid = doc["ssid"] | "";
+        const String password = doc["password"] | "";
+        const bool ok = _net.addAndSave(ssid, password);
+        ack(requestId, ok, ok ? "" : _net.lastError());
+        return;
+    }
+
+    if (command == "wifi_remove") {
+        const String ssid = doc["ssid"] | "";
+        const bool ok = _net.removeAndSave(ssid);
+        ack(requestId, ok, ok ? "" : _net.lastError());
+        return;
+    }
+
+    if (command == "wifi_reorder") {
+        const String ssid = doc["ssid"] | "";
+        const size_t index = doc["index"] | 0;
+        const bool ok = _net.reorderAndSave(ssid, index);
+        ack(requestId, ok, ok ? "" : _net.lastError());
+        return;
+    }
+
+    if (command == "reboot") {
+        ack(requestId, true);
+        delay(300);
+        if (_rebootCb) {
+            _rebootCb();
+        }
+        return;
+    }
+
+    if (command == "sleep") {
+        const uint16_t minutes = doc["minutes"] | 60;
+        ack(requestId, true);
+        delay(300);
+        if (_sleepCb) {
+            _sleepCb(minutes);
+        }
+        return;
+    }
+
+    if (command == "factory_reset") {
+        ack(requestId, true);
+        delay(300);
+        if (_factoryResetCb) {
+            _factoryResetCb();
+        }
+        return;
+    }
+
+    ack(requestId, false, "unknown_command");
 }
 
 bool DispComm::sendTelemetry(float distanceMm, bool relayState) {
-    if (!isConnected()) return false;
+    if (!isAuthenticated()) {
+        return false;
+    }
 
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["event"] = "telemetry";
-    doc["device_id"] = _crypto.getDeviceId();
+    doc["device_id"] = _config.get().deviceId;
     doc["distance_mm"] = distanceMm;
     doc["relay_state"] = relayState;
     doc["timestamp"] = millis() / 1000;
+    doc["rssi"] = _net.rssi();
 
-    String output;
-    serializeJson(doc, output);
-    return _webSocket.sendTXT(output);
+    _sendJson(doc);
+    return true;
 }
 
 void DispComm::sendPing() {
-    if (!_wsConnected) return;
-    StaticJsonDocument<128> doc;
+    if (!_wsConnected) {
+        return;
+    }
+    StaticJsonDocument<192> doc;
     doc["event"] = "ping";
-    doc["device_id"] = _crypto.getDeviceId();
+    doc["device_id"] = _config.get().deviceId;
+    _sendJson(doc);
+}
 
+void DispComm::sendDeviceStatus() {
+    if (!_wsConnected) {
+        return;
+    }
+
+    const DeviceConfig& cfg = _config.get();
+    StaticJsonDocument<512> doc;
+    doc["event"] = "device_status";
+    doc["device_id"] = cfg.deviceId;
+    doc["uptime_s"] = millis() / 1000;
+    doc["rssi"] = _net.rssi();
+    doc["ip"] = _net.ip().toString();
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["wake_reason"] = _wakeReason;
+    doc["firmware"] = cfg.firmware;
+    doc["pending_claim"] = isPendingClaim();
+    _sendJson(doc);
+}
+
+void DispComm::ack(const String& requestId, bool ok, const String& error) {
+    StaticJsonDocument<256> doc;
+    doc["event"] = "ack";
+    doc["request_id"] = requestId;
+    doc["ok"] = ok;
+    if (!ok && error.length() > 0) {
+        doc["error"] = error;
+    }
+    _sendJson(doc);
+}
+
+void DispComm::_sendJson(JsonDocument& doc) {
     String output;
     serializeJson(doc, output);
-    _webSocket.sendTXT(output);
+    _ws.sendTXT(output);
 }

@@ -5,7 +5,12 @@ from sqlalchemy import select, func
 from backend.config import settings
 from backend.database.connect import init_db, get_db
 from backend.database.models import Device, TankConfig, Telemetry, AuditLog
-from backend.security.auth import hash_credentials, verify_device_token, record_audit
+from backend.security.auth import (
+    compute_device_proof,
+    hash_credentials,
+    record_audit,
+    verify_device_proof,
+)
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -32,10 +37,14 @@ async def run_tests():
     test_id = "TEST-DEVICE-01"
     test_pass = "secreto_seguro_123"
     expected_hash = hash_credentials(test_id, test_pass)
-    now_ts = int(time.time())
-    token = hash_credentials(f"{expected_hash}:{now_ts}", "")  # Simular token
-
-    print(f"[{GREEN}OK{RESET}] Hash SHA-256 de credenciales generado: {expected_hash[:16]}...")
+    nonce = "nonce-de-prueba"
+    proof = compute_device_proof(expected_hash, nonce)
+    if not verify_device_proof(expected_hash, nonce, proof):
+        print(f"[{RED}FAIL{RESET}] Verificación HMAC del dispositivo falló.")
+        errors += 1
+    else:
+        print(f"[{GREEN}OK{RESET}] HMAC-SHA256 de dispositivo verificado.")
+        print(f"[{GREEN}OK{RESET}] Hash SHA-256 de credenciales generado: {expected_hash[:16]}...")
 
     # 3. Test de Inserción de Dispositivo
     async with get_db() as session:
