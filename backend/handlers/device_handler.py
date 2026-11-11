@@ -1,367 +1,466 @@
-#include "DispComm.h"
+from __future__ import annotations
 
-DispComm::DispComm(Crypto& crypto, ConfigStore& config, NetManager& net)
-    : _crypto(crypto), _config(config), _net(net) {}
+import json
+import logging
+import time
+from datetime import datetime, timedelta
+from typing import Optional
 
-void DispComm::begin() {
-    const DeviceConfig& cfg = _config.get();
+from sqlalchemy import delete, select
 
-    if (cfg.backendTls) {
-        _ws.beginSSL(cfg.backendHost.c_str(), cfg.backendPort,
-                     cfg.backendPath.c_str());
-    } else {
-        _ws.begin(cfg.backendHost.c_str(), cfg.backendPort,
-                  cfg.backendPath.c_str());
+from backend.config import settings
+from backend.database.connect import get_db
+from backend.database.models import Device, DeviceNetwork, TankConfig, Telemetry
+from backend.handlers.state import server_state
+from backend.security.auth import (
+    record_audit,
+    verify_device_proof,
+)
+
+logger = logging.getLogger("DispWatter.Device")
+
+_telemetry_writes = 0
+
+
+async def _send(websocket, payload: dict) -> None:
+    try:
+        await websocket.send(json.dumps(payload))
+    except Exception:
+        logger.debug("No se pudo enviar mensaje al dispositivo")
+
+
+async def _get_device(session, device_id: str) -> Optional[Device]:
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    return result.scalar_one_or_none()
+
+
+async def _ensure_device(
+    session,
+    device_id: str,
+    name: str,
+    location: str,
+    firmware: str,
+) -> Device:
+    device = await _get_device(session, device_id)
+    if device is None:
+        device = Device(
+            id=device_id,
+            name=name or f"Bebedero {device_id}",
+            location=location or "Sin ubicación",
+            firmware_version=firmware or "1.0.0",
+            key_hash=None,
+            status="PENDING_CLAIM",
+            is_online=False,
+        )
+        session.add(device)
+        session.add(TankConfig(device_id=device_id))
+        await session.commit()
+        await session.refresh(device)
+        await record_audit(
+            "DEVICE_AUTO_REGISTERED",
+            device_id=device_id,
+            details=f"Pendiente de vinculación ({device.name}, {device.location})",
+        )
+    else:
+        if device.status == "PENDING_CLAIM":
+            if name:
+                device.name = name
+            if location:
+                device.location = location
+        if firmware:
+            device.firmware_version = firmware
+        await session.commit()
+    return device
+
+
+async def _issue_challenge(websocket, purpose: str = "auth") -> str:
+    nonce = server_state.new_challenge(websocket, purpose)
+    await _send(
+        websocket,
+        {"event": "challenge", "nonce": nonce, "expires_in": 30, "purpose": purpose},
+    )
+    return nonce
+
+
+async def _handle_hello(websocket, data: dict) -> None:
+    device_id = str(data.get("device_id") or "").strip()
+    if not device_id:
+        await _send(websocket, {"event": "auth_status", "status": "error", "error": "invalid_device_id"})
+        return
+
+    name = str(data.get("name") or "")
+    location = str(data.get("location") or "")
+    firmware = str(data.get("firmware") or "1.0.0")
+
+    async with get_db() as session:
+        await _ensure_device(session, device_id, name, location, firmware)
+
+    # Permite enviar el challenge de claim incluso si aún no terminó su auth.
+    server_state.register_pending_device(device_id, websocket)
+    await _issue_challenge(websocket, "auth")
+
+
+async def _handle_auth(websocket, data: dict) -> None:
+    device_id = str(data.get("device_id") or "").strip()
+    nonce = str(data.get("nonce") or "")
+    proof = str(data.get("proof") or "").lower()
+
+    if not device_id or not nonce or len(proof) != 64:
+        await _send(websocket, {"event": "auth_status", "status": "error", "error": "invalid_params"})
+        return
+
+    challenge = server_state.consume_challenge(websocket, nonce)
+    if not challenge:
+        await _send(websocket, {"event": "auth_status", "status": "error", "error": "invalid_nonce"})
+        await record_audit("DEVICE_AUTH_FAILED", device_id=device_id, details="Nonce inválido o caducado")
+        return
+
+    name = str(data.get("name") or "")
+    location = str(data.get("location") or "")
+    firmware = str(data.get("firmware") or "1.0.0")
+    wake_reason = str(data.get("wake_reason") or "")
+
+    claim = server_state.claim_attempts.get(device_id)
+    claim_nonce = claim["nonce"] if claim else None
+
+    async with get_db() as session:
+        device = await _ensure_device(session, device_id, name, location, firmware)
+        if device.status == "BLOCKED":
+            await _send(websocket, {"event": "auth_status", "status": "error", "error": "blocked"})
+            await record_audit("DEVICE_AUTH_BLOCKED", device_id=device_id)
+            return
+
+        # --- Flujo de vinculación (claim) ---
+        if claim and claim_nonce == nonce:
+            expected_hash = claim["expected_hash"]
+            if verify_device_proof(expected_hash, nonce, proof):
+                device.key_hash = expected_hash
+                device.status = "CLAIMED"
+                device.owner_id = claim["user"]["id"]
+                device.is_online = True
+                device.last_seen = datetime.utcnow()
+                device.last_ip = str(data.get("ip") or "") or device.last_ip
+                device.last_rssi = data.get("rssi")
+                device.wake_reason = wake_reason or device.wake_reason
+                await session.commit()
+
+                server_state.claim_attempts.pop(device_id, None)
+                future = claim.get("future")
+                if future and not future.done():
+                    future.set_result(
+                        {
+                            "ok": True,
+                            "device_id": device.id,
+                            "name": device.name,
+                            "status": device.status,
+                        }
+                    )
+
+                server_state.register_device(device_id, websocket)
+                await _send(websocket, {"event": "auth_status", "status": "ok", "device_id": device_id})
+                await record_audit(
+                    "DEVICE_CLAIMED",
+                    device_id=device_id,
+                    actor=claim["user"].get("username", "USER"),
+                    details="Vinculación verificada con challenge-response",
+                )
+                await server_state.broadcast_to_panels(
+                    {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": True}
+                )
+            else:
+                server_state.claim_attempts.pop(device_id, None)
+                future = claim.get("future")
+                if future and not future.done():
+                    future.set_result({"ok": False, "error": "invalid_credentials"})
+                await _send(websocket, {"event": "auth_status", "status": "error", "error": "invalid_proof"})
+                await record_audit(
+                    "DEVICE_CLAIM_FAILED",
+                    device_id=device_id,
+                    actor=claim["user"].get("username", "USER"),
+                    details="El proof HMAC no coincide con el secreto indicado",
+                )
+            return
+
+        # --- Dispositivo todavía sin secreto verificado ---
+        if not device.key_hash:
+            device.is_online = True
+            device.last_seen = datetime.utcnow()
+            if name:
+                device.name = name
+            if location:
+                device.location = location
+            await session.commit()
+
+            server_state.register_device(device_id, websocket)
+            await _send(
+                websocket,
+                {"event": "auth_status", "status": "pending_claim", "device_id": device_id},
+            )
+            await record_audit(
+                "DEVICE_PENDING_CONNECTED",
+                device_id=device_id,
+                details="Conectado sin vincular; solo telemetría",
+            )
+            await server_state.broadcast_to_panels(
+                {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": False}
+            )
+            return
+
+        # --- Autenticación normal de un dispositivo ya vinculado ---
+        if not verify_device_proof(device.key_hash, nonce, proof):
+            await _send(websocket, {"event": "auth_status", "status": "error", "error": "invalid_proof"})
+            await record_audit("DEVICE_AUTH_FAILED", device_id=device_id, details="Proof HMAC incorrecto")
+            return
+
+        device.is_online = True
+        device.last_seen = datetime.utcnow()
+        if name and device.status == "PENDING_CLAIM":
+            device.name = name
+        if location:
+            device.location = location
+        if firmware:
+            device.firmware_version = firmware
+        if wake_reason:
+            device.wake_reason = wake_reason
+        await session.commit()
+
+        server_state.register_device(device_id, websocket)
+        await _send(websocket, {"event": "auth_status", "status": "ok", "device_id": device_id})
+        await record_audit("DEVICE_AUTH_SUCCESS", device_id=device_id, details="Challenge-response verificado")
+        logger.info("[DISPOSITIVO] %s autenticado", device_id)
+        await server_state.broadcast_to_panels(
+            {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": device.status == "CLAIMED"}
+        )
+
+
+def _device_authorized(websocket, device_id: str) -> bool:
+    return server_state.device_sockets.get(device_id) is websocket
+
+
+async def _handle_telemetry(websocket, data: dict) -> None:
+    device_id = str(data.get("device_id") or "")
+    if not _device_authorized(websocket, device_id):
+        return
+
+    try:
+        distance_mm = float(data.get("distance_mm", 0.0))
+    except (TypeError, ValueError):
+        return
+    if not (0.0 <= distance_mm <= 12000.0):
+        return
+
+    relay_state = bool(data.get("relay_state", False))
+
+    async with get_db() as session:
+        result = await session.execute(select(TankConfig).where(TankConfig.device_id == device_id))
+        cfg = result.scalar_one_or_none()
+
+        bottom = cfg.bottom_dist_mm if cfg else 900.0
+        mirror = cfg.mirror_dist_mm if cfg else 100.0
+        capacity = cfg.capacity_liters if cfg else 50.0
+        min_lvl = cfg.min_level_percent if cfg else 25.0
+        max_lvl = cfg.max_level_percent if cfg else 90.0
+        auto_refill = cfg.auto_refill if cfg else True
+
+        usable_height = max(1.0, bottom - mirror)
+        water_height = bottom - distance_mm
+        percent = max(0.0, min(100.0, (water_height / usable_height) * 100.0))
+        liters = round(capacity * percent / 100.0, 1)
+
+        session.add(
+            Telemetry(
+                device_id=device_id,
+                distance_mm=distance_mm,
+                water_percent=percent,
+                water_liters=liters,
+                relay_state=relay_state,
+            )
+        )
+
+        device = await _get_device(session, device_id)
+        if device:
+            device.last_seen = datetime.utcnow()
+            device.is_online = True
+
+        await session.commit()
+
+    global _telemetry_writes
+    _telemetry_writes += 1
+    if _telemetry_writes % 100 == 0:
+        cutoff = datetime.utcnow() - timedelta(hours=settings.TELEMETRY_RETENTION_HOURS)
+        async with get_db() as session:
+            await session.execute(delete(Telemetry).where(Telemetry.created_at < cutoff))
+            await session.commit()
+
+    server_state.telemetry_cache[device_id] = {
+        "distance_mm": distance_mm,
+        "percent": round(percent, 1),
+        "liters": liters,
+        "relay_state": relay_state,
+        "updated_at": time.time(),
     }
 
-    _ws.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
-        this->_handleEvent(type, payload, length);
-    });
-    _ws.setReconnectInterval(5000);
+    if auto_refill and device.status == "CLAIMED":
+        if percent <= min_lvl and not relay_state:
+            await server_state.send_to_device(
+                device_id, {"command": "set_relay", "state": True, "request_id": "auto-on"}
+            )
+            await server_state.send_to_device(
+                device_id,
+                {
+                    "command": "display",
+                    "line0": f"Nivel {percent:.0f}% {liters:.0f}L",
+                    "line1": "Llenando...",
+                    "clear": False,
+                    "request_id": "auto-on-lcd",
+                },
+            )
+            await record_audit("AUTO_REFILL_ON", device_id=device_id, details=f"Nivel {percent:.1f}% <= {min_lvl}%")
+        elif percent >= max_lvl and relay_state:
+            await server_state.send_to_device(
+                device_id, {"command": "set_relay", "state": False, "request_id": "auto-off"}
+            )
+            await server_state.send_to_device(
+                device_id,
+                {
+                    "command": "display",
+                    "line0": f"Nivel {percent:.0f}% {liters:.0f}L",
+                    "line1": "Tanque lleno",
+                    "clear": False,
+                    "request_id": "auto-off-lcd",
+                },
+            )
+            await record_audit("AUTO_REFILL_OFF", device_id=device_id, details=f"Nivel {percent:.1f}% >= {max_lvl}%")
 
-    Serial.printf("[WS] Backend %s:%u%s\n", cfg.backendHost.c_str(),
-                  cfg.backendPort, cfg.backendPath.c_str());
-}
-
-void DispComm::update() {
-    if (!_net.isConnected()) {
-        if (_wsConnected) {
-            _ws.disconnect();
+    await server_state.broadcast_to_panels(
+        {
+            "event": "telemetry",
+            "device_id": device_id,
+            "distance_mm": distance_mm,
+            "water_percent": round(percent, 1),
+            "water_liters": liters,
+            "relay_state": relay_state,
         }
-        return;
-    }
+    )
 
-    _ws.loop();
 
-    if (_wsConnected && _state != AuthState::Disconnected &&
-        _state != AuthState::Authenticated && _state != AuthState::PendingClaim) {
-        if (millis() - _connectedAt > 12000) {
-            Serial.println("[WS] Timeout esperando challenge/auth_status");
-            _ws.disconnect();
+async def _handle_device_status(websocket, data: dict) -> None:
+    device_id = str(data.get("device_id") or "")
+    if not _device_authorized(websocket, device_id):
+        return
+
+    rssi = data.get("rssi")
+    ip = data.get("ip")
+    wake_reason = data.get("wake_reason")
+
+    async with get_db() as session:
+        device = await _get_device(session, device_id)
+        if device:
+            device.last_seen = datetime.utcnow()
+            device.is_online = True
+            if isinstance(rssi, int):
+                device.last_rssi = rssi
+            if ip:
+                device.last_ip = str(ip)
+            if wake_reason:
+                device.wake_reason = str(wake_reason)
+            await session.commit()
+
+    await server_state.broadcast_to_panels(
+        {
+            "event": "device_status",
+            "device_id": device_id,
+            "is_online": True,
+            "rssi": rssi,
+            "ip": ip,
+            "uptime_s": data.get("uptime_s"),
+            "free_heap": data.get("free_heap"),
+            "wake_reason": wake_reason,
+            "firmware": data.get("firmware"),
+            "pending_claim": bool(data.get("pending_claim")),
         }
-    }
+    )
 
-    if (isAuthenticated() && millis() - _lastPing > 30000) {
-        sendPing();
-        _lastPing = millis();
-    }
-}
 
-void DispComm::_handleEvent(WStype_t type, uint8_t* payload, size_t length) {
-    (void)length;
+async def _update_network_cache(device_id: str, networks: list) -> None:
+    async with get_db() as session:
+        await session.execute(delete(DeviceNetwork).where(DeviceNetwork.device_id == device_id))
+        for item in networks:
+            if not isinstance(item, dict):
+                continue
+            ssid = str(item.get("ssid") or "").strip()
+            if not ssid:
+                continue
+            session.add(
+                DeviceNetwork(
+                    device_id=device_id,
+                    ssid=ssid[:64],
+                    priority=int(item.get("priority") or 0),
+                    has_password=bool(item.get("has_password", True)),
+                    rssi=item.get("rssi"),
+                    visible=bool(item.get("visible", False)),
+                    connected=bool(item.get("connected", False)),
+                )
+            )
+        await session.commit()
 
-    switch (type) {
-        case WStype_DISCONNECTED:
-            _wsConnected = false;
-            _setState(AuthState::Disconnected);
-            Serial.println("[WS] Desconectado del backend");
-            break;
 
-        case WStype_CONNECTED: {
-            _wsConnected = true;
-            _connectedAt = millis();
-            _setState(AuthState::AwaitChallenge);
+async def _handle_command_result(websocket, data: dict) -> None:
+    event = str(data.get("event") or "")
+    request_id = str(data.get("request_id") or "")
+    device_id = str(data.get("device_id") or "")
 
-            StaticJsonDocument<320> hello;
-            hello["event"] = "hello";
-            hello["device_id"] = _config.get().deviceId;
-            hello["firmware"] = _config.get().firmware;
+    if request_id:
+        server_state.resolve_request(request_id, data)
 
-            String helloText;
-            serializeJson(hello, helloText);
-            Serial.printf("[WS] Conectado a backend %s:%u%s\n",
-                          _config.get().backendHost.c_str(),
-                          _config.get().backendPort,
-                          _config.get().backendPath.c_str());
-            Serial.printf("[WS] Enviando hello -> %s\n", helloText.c_str());
-            _sendJson(hello);
+    if event == "wifi_list" and device_id:
+        networks = data.get("networks")
+        if isinstance(networks, list):
+            await _update_network_cache(device_id, networks)
 
-            Serial.println("[WS] Esperando challenge");
-            break;
-        }
 
-        case WStype_TEXT:
-            _handleJson(reinterpret_cast<const char*>(payload));
-            break;
+async def handle_device_message(websocket, raw_message: str) -> None:
+    try:
+        data = json.loads(raw_message)
+    except json.JSONDecodeError:
+        logger.warning("JSON no válido de dispositivo: %s", raw_message[:200])
+        return
 
-        case WStype_ERROR:
-            Serial.println("[WS] Error de WebSocket");
-            break;
+    if not isinstance(data, dict):
+        return
 
-        default:
-            break;
-    }
-}
+    event = str(data.get("event") or "")
 
-void DispComm::_setState(AuthState state) {
-    if (_state == state) {
-        return;
-    }
-    _state = state;
+    if event == "hello":
+        await _handle_hello(websocket, data)
+        return
 
-    if (state == AuthState::Authenticated) {
-        _lastAuthMs = millis();
-        Serial.println("[WS] Autenticado con el backend");
-    }
+    if event == "auth":
+        await _handle_auth(websocket, data)
+        return
 
-    _notifyConnection();
-}
+    mapped_id = server_state.device_ids.get(websocket)
 
-void DispComm::_notifyConnection() {
-    if (_connCb) {
-        _connCb(_state == AuthState::Authenticated);
-    }
-}
+    # El firmware no repite device_id en ack/wifi_list: se deriva del socket.
+    if event in {"ack", "wifi_list"}:
+        claimed_id = str(data.get("device_id") or "")
+        if not mapped_id or (claimed_id and claimed_id != mapped_id):
+            await _send(websocket, {"event": "error", "code": "unauthorized"})
+            return
+        data["device_id"] = mapped_id
+        await _handle_command_result(websocket, data)
+        return
 
-void DispComm::_sendAuth(const String& nonce) {
-    const String proof = _crypto.createAuthProof(nonce);
-    if (proof.length() != 64) {
-        Serial.println("[WS] No se pudo calcular el proof HMAC");
-        _ws.disconnect();
-        return;
-    }
+    device_id = str(data.get("device_id") or "")
+    if not _device_authorized(websocket, device_id):
+        await _send(websocket, {"event": "error", "code": "unauthorized", "message": "Autenticación requerida"})
+        return
 
-    const DeviceConfig& cfg = _config.get();
-    StaticJsonDocument<768> doc;
-    doc["event"] = "auth";
-    doc["device_id"] = cfg.deviceId;
-    doc["nonce"] = nonce;
-    doc["proof"] = proof;
-    doc["name"] = cfg.deviceName;
-    doc["location"] = cfg.location;
-    doc["firmware"] = cfg.firmware;
-    doc["wake_reason"] = _wakeReason;
-
-    Serial.printf("[WS] Enviando auth para nonce=%s\n", nonce.c_str());
-    _setState(AuthState::Authenticating);
-    _sendJson(doc);
-}
-
-void DispComm::_handleJson(const char* json) {
-    DynamicJsonDocument doc(2048);
-    const DeserializationError error = deserializeJson(doc, json);
-    if (error) {
-        Serial.printf("[WS] JSON invalido: %s\n", error.c_str());
-        return;
-    }
-
-    const String event = doc["event"] | "";
-    Serial.printf("[WS] Mensaje recibido: %s\n", event.c_str());
-
-    if (event == "challenge") {
-        const String nonce = doc["nonce"] | "";
-        if (nonce.length() == 0) {
-            _ws.disconnect();
-            return;
-        }
-        _sendAuth(nonce);
-        return;
-    }
-
-    if (event == "auth_status") {
-        const String status = doc["status"] | "";
-        if (status == "ok") {
-            _setState(AuthState::Authenticated);
-            sendDeviceStatus();
-        } else if (status == "pending_claim") {
-            _setState(AuthState::PendingClaim);
-            sendDeviceStatus();
-        } else {
-            Serial.printf("[WS] Autenticacion rechazada: %s\n", status.c_str());
-            _ws.disconnect();
-        }
-        return;
-    }
-
-    if (doc.containsKey("command")) {
-        _handleCommand(doc);
-        return;
-    }
-
-    if (event == "pong") {
-        return;
-    }
-}
-
-void DispComm::_handleCommand(JsonDocument& doc) {
-    const String command = doc["command"] | "";
-    const String requestId = doc["request_id"] | "";
-
-    if (!isAuthenticated()) {
-        if (requestId.length() > 0) {
-            ack(requestId, false, "unauthorized");
-        }
-        return;
-    }
-
-    if (command == "set_relay") {
-        const bool state = doc["state"] | false;
-        if (_relayCb) {
-            _relayCb(state);
-        }
-        ack(requestId, true);
-        return;
-    }
-
-    if (command == "display") {
-        const String line0 = doc["line0"] | "";
-        const String line1 = doc["line1"] | "";
-        const bool clear = doc["clear"] | false;
-        if (_displayCb) {
-            _displayCb(line0, line1, clear);
-        }
-        ack(requestId, true);
-        return;
-    }
-
-    if (command == "wifi_list") {
-        const String networks = _net.networksJson();
-        DynamicJsonDocument response(4600);
-        response["event"] = "wifi_list";
-        response["request_id"] = requestId;
-
-        DynamicJsonDocument array(4096);
-        if (!deserializeJson(array, networks)) {
-            response["networks"] = array.as<JsonArray>();
-        } else {
-            response["networks"] = serialized("[]");
-        }
-        _sendJson(response);
-        return;
-    }
-
-    if (command == "wifi_add") {
-        const String ssid = doc["ssid"] | "";
-        const String password = doc["password"] | "";
-        const bool ok = _net.addAndSave(ssid, password);
-        ack(requestId, ok, ok ? "" : _net.lastError());
-        return;
-    }
-
-    if (command == "wifi_remove") {
-        const String ssid = doc["ssid"] | "";
-        const bool ok = _net.removeAndSave(ssid);
-        ack(requestId, ok, ok ? "" : _net.lastError());
-        return;
-    }
-
-    if (command == "wifi_reorder") {
-        const String ssid = doc["ssid"] | "";
-        const size_t index = doc["index"] | 0;
-        const bool ok = _net.reorderAndSave(ssid, index);
-        ack(requestId, ok, ok ? "" : _net.lastError());
-        return;
-    }
-
-    if (command == "reboot") {
-        ack(requestId, true);
-        delay(300);
-        if (_rebootCb) {
-            _rebootCb();
-        }
-        return;
-    }
-
-    if (command == "sleep") {
-        const uint16_t minutes = doc["minutes"] | 60;
-        ack(requestId, true);
-        delay(300);
-        if (_sleepCb) {
-            _sleepCb(minutes);
-        }
-        return;
-    }
-
-    if (command == "factory_reset") {
-        ack(requestId, true);
-        delay(300);
-        if (_factoryResetCb) {
-            _factoryResetCb();
-        }
-        return;
-    }
-
-    ack(requestId, false, "unknown_command");
-}
-
-bool DispComm::sendTelemetry(float distanceMm, bool relayState) {
-    if (!isAuthenticated()) {
-        return false;
-    }
-
-    StaticJsonDocument<384> doc;
-    doc["event"] = "telemetry";
-    doc["device_id"] = _config.get().deviceId;
-    doc["distance_mm"] = distanceMm;
-    doc["relay_state"] = relayState;
-    doc["timestamp"] = millis() / 1000;
-    doc["rssi"] = _net.rssi();
-
-    Serial.printf("[WS] Enviando telemetry distance=%.1f relay=%s\n",
-                  distanceMm, relayState ? "ON" : "OFF");
-    return _sendJson(doc);
-}
-
-void DispComm::sendPing() {
-    if (!_wsConnected) {
-        return;
-    }
-    StaticJsonDocument<192> doc;
-    doc["event"] = "ping";
-    doc["device_id"] = _config.get().deviceId;
-    Serial.println("[WS] Ping al backend");
-    _sendJson(doc);
-}
-
-void DispComm::sendDeviceStatus() {
-    if (!_wsConnected) {
-        return;
-    }
-
-    const DeviceConfig& cfg = _config.get();
-    StaticJsonDocument<512> doc;
-    doc["event"] = "device_status";
-    doc["device_id"] = cfg.deviceId;
-    doc["uptime_s"] = millis() / 1000;
-    doc["rssi"] = _net.rssi();
-    doc["ip"] = _net.ip().toString();
-    doc["free_heap"] = ESP.getFreeHeap();
-    doc["wake_reason"] = _wakeReason;
-    doc["firmware"] = cfg.firmware;
-    doc["pending_claim"] = isPendingClaim();
-
-    Serial.printf("[WS] Enviando device_status firmware=%s\n", cfg.firmware.c_str());
-    _sendJson(doc);
-}
-
-void DispComm::ack(const String& requestId, bool ok, const String& error) {
-    StaticJsonDocument<256> doc;
-    doc["event"] = "ack";
-    doc["request_id"] = requestId;
-    doc["ok"] = ok;
-    if (!ok && error.length() > 0) {
-        doc["error"] = error;
-    }
-    _sendJson(doc);
-}
-
-bool DispComm::_sendJson(JsonDocument& doc) {
-    String output;
-    serializeJson(doc, output);
-    const bool ok = _ws.sendTXT(output);
-
-    Serial.printf("[WS] %s -> %s\n",
-                  (doc["event"] | "msg").as<const char*>(),
-                  ok ? "OK" : "ERROR");
-
-    if (!ok) {
-        Serial.printf("[WS] Fallo al enviar %s al backend\n",
-                      (doc["event"] | "msg").as<const char*>());
-        _ws.disconnect();
-        return false;
-    }
-
-    Serial.printf("[WS] Payload enviado: %s\n", output.c_str());
-    return true;
-}
-
+    if event == "telemetry":
+        await _handle_telemetry(websocket, data)
+    elif event == "device_status":
+        await _handle_device_status(websocket, data)
+    elif event == "ping":
+        await _send(websocket, {"event": "pong", "device_id": device_id})
+    else:
+        logger.debug("Evento de dispositivo no manejado: %s", event)
