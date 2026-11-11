@@ -49,7 +49,7 @@ void refreshLcd() {
     } else if (comm.isPendingClaim()) {
         showLines("Pendiente vinc.", cfg.deviceId);
     } else if (!net.isConnected()) {
-        showLines("Buscando WiFi", cfg.deviceId);
+        showLines(net.statusLine0(), net.statusLine1());
     } else if (!backendAuthenticated) {
         if (comm.backendFailureVisible()) {
             showLines("Servicio no disp.", "Reintentando...");
@@ -66,6 +66,12 @@ void refreshLcd() {
 }
 
 void onRelayCommand(bool state) {
+    // Nunca aceptar una orden ON mientras no haya red y backend autenticado.
+    if (state && (!net.isConnected() || !backendAuthenticated)) {
+        relay.forceOff();
+        Serial.println("[SAFE] Orden de encendido rechazada: sin WiFi/backend");
+        return;
+    }
     relay.set(state);
     Serial.printf("[RELE] Estado: %s\n", state ? "ENCENDIDO" : "APAGADO");
 }
@@ -112,6 +118,7 @@ void onFactoryReset() {
 void setup() {
     Serial.begin(115200);
     delay(200);
+    // El relé queda apagado antes de iniciar LCD, FS, WiFi o WebSocket.
     relay.begin(PIN_RELE, RELE_ON == LOW);
     lcd.init();
     lcd.onn();
@@ -121,6 +128,7 @@ void setup() {
     configReady = configStore.begin();
     power.begin(configStore.get().wakePin, configStore.get().wakeActiveLow);
     if (!configReady) {
+        relay.forceOff();
         Serial.printf("[CONFIG] %s\n", configStore.lastError().c_str());
         showLines("Config invalida", "Revisa /config");
         return;
@@ -141,11 +149,12 @@ void setup() {
     comm.onSleep(onSleep);
     comm.onFactoryReset(onFactoryReset);
     comm.begin();
-    showLines("Buscando WiFi", configStore.get().deviceId);
+    showLines("Iniciando WiFi", "Rele: OFF");
 }
 
 void loop() {
     if (!configReady) {
+        relay.forceOff();
         delay(2000);
         return;
     }
@@ -155,10 +164,12 @@ void loop() {
     const unsigned long now = millis();
     const DeviceConfig& cfg = configStore.get();
 
-    // Fail-safe inmediato: el relé no debe quedar activo sin Wi-Fi/backend.
-    if ((!net.isConnected() || !backendAuthenticated) && relay.state()) {
+    // Mantener salida desenergizada si falta WiFi o no se autenticó backend.
+    if (!net.isConnected() || !backendAuthenticated) {
+        if (relay.state()) {
+            Serial.println("[SAFE] Sin WiFi/backend: apagando relé");
+        }
         relay.forceOff();
-        Serial.println("[SAFE] Sin WiFi o backend: relé apagado");
     }
     relay.guard(now, comm.lastAuthenticatedMs(),
                 static_cast<unsigned long>(cfg.maxRelayOnMin) * 60000UL,

@@ -32,6 +32,10 @@ public:
     int32_t rssi() const;
     IPAddress ip() const;
 
+    // Estado de conexión resumido para la pantalla LCD de 16 columnas.
+    String statusLine0() const;
+    String statusLine1() const;
+
     bool addAndSave(const String& ssid, const String& password);
     bool removeAndSave(const String& ssid);
     bool reorderAndSave(const String& ssid, size_t newIndex);
@@ -46,17 +50,23 @@ private:
     void _startScan();
     void _pollScan();
     void _buildCandidates();
-    void _tryNext();
+    void _tryNext(const String& failedSsid = "", const String& reason = "");
+    void _showTransientMessage(const String& line0, const String& line1);
+    String _nextSsid() const;
 
     ConfigStore& _store;
     State _state = State::Idle;
     unsigned long _stateSince = 0;
     unsigned long _lastScan = 0;
+    unsigned long _messageUntil = 0;
     size_t _candidate = 0;
     bool _wasConnected = false;
     std::vector<String> _candidates;
     std::vector<WifiStatus> _scan;
     String _lastError;
+    String _currentSsid;
+    String _messageLine0;
+    String _messageLine1;
 };
 
 #endif // NET_MANAGER_H

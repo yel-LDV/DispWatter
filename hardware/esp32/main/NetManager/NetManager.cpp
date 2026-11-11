@@ -5,6 +5,14 @@
 namespace {
 constexpr unsigned long CONNECT_TIMEOUT_MS = 10000;
 constexpr unsigned long SCAN_DELAY_MS = 500;
+constexpr unsigned long STATUS_MESSAGE_MS = 3000;
+
+String wifiFailureReason(wl_status_t status) {
+    if (status == WL_NO_SSID_AVAIL) return "SSID no encontrada";
+    if (status == WL_CONNECT_FAILED) return "Clave/AP rechazado";
+    if (status == WL_DISCONNECTED) return "Sin respuesta del AP";
+    return String("Estado WiFi ") + String(static_cast<int>(status));
+}
 } // namespace
 
 NetManager::NetManager(ConfigStore& store) : _store(store) {}
@@ -21,6 +29,7 @@ void NetManager::begin() {
     _lastScan = 0;
     _candidate = 0;
     _wasConnected = false;
+    _messageUntil = 0;
 
     Serial.printf("[WIFI] Inicializado en modo estación; hay %u red(es) guardada(s)\n",
                   static_cast<unsigned>(_store.get().wifi.size()));
@@ -47,6 +56,43 @@ IPAddress NetManager::ip() const {
     return isConnected() ? WiFi.localIP() : IPAddress(0, 0, 0, 0);
 }
 
+String NetManager::statusLine0() const {
+    if (millis() < _messageUntil && _messageLine0.length() > 0) return _messageLine0;
+    switch (_state) {
+        case State::Idle: return "WiFi iniciando";
+        case State::Scanning: return "Escaneando WiFi";
+        case State::Connecting: return String("WiFi: ") + _currentSsid;
+        case State::Connected: return String("WiFi OK: ") + connectedSSID();
+        case State::Backoff: return "Sin WiFi";
+        default: return "Buscando WiFi";
+    }
+}
+
+String NetManager::statusLine1() const {
+    if (millis() < _messageUntil && _messageLine1.length() > 0) return _messageLine1;
+    switch (_state) {
+        case State::Idle: return "Preparando...";
+        case State::Scanning: return "Buscando redes";
+        case State::Connecting:
+            return String("Probando ") + String(static_cast<unsigned>(_candidate)) + "/" +
+                   String(static_cast<unsigned>(_candidates.size()));
+        case State::Connected: return String(connectedSSID());
+        case State::Backoff: return "Reintento en 5s";
+        default: return "";
+    }
+}
+
+void NetManager::_showTransientMessage(const String& line0, const String& line1) {
+    _messageLine0 = line0;
+    _messageLine1 = line1;
+    _messageUntil = millis() + STATUS_MESSAGE_MS;
+}
+
+String NetManager::_nextSsid() const {
+    if (_candidate < _candidates.size()) return _candidates[_candidate];
+    return "Reintento en 5s";
+}
+
 void NetManager::update() {
     const unsigned long now = millis();
 
@@ -54,6 +100,8 @@ void NetManager::update() {
         if (_state != State::Connected) {
             _state = State::Connected;
             _wasConnected = true;
+            _messageUntil = 0;
+            _currentSsid = WiFi.SSID();
             Serial.printf("[WIFI] Conectado a '%s' (%d dBm) IP %s\n",
                           WiFi.SSID().c_str(), WiFi.RSSI(),
                           WiFi.localIP().toString().c_str());
@@ -70,37 +118,33 @@ void NetManager::update() {
 
     switch (_state) {
         case State::Idle:
-            if (now - _lastScan >= SCAN_DELAY_MS) {
-                _startScan();
-            }
+            if (now - _lastScan >= SCAN_DELAY_MS) _startScan();
             break;
-
         case State::Backoff:
-            if (now - _lastScan >= _store.get().retryMs) {
-                _startScan();
-            }
+            if (now - _lastScan >= _store.get().retryMs) _startScan();
             break;
-
         case State::Scanning:
             _pollScan();
             break;
-
         case State::Connecting: {
             const wl_status_t status = WiFi.status();
             if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) {
-                Serial.printf("[WIFI] Falló '%s' (status=%d); intentando otra red\n",
-                              _candidates[_candidate - 1].c_str(), static_cast<int>(status));
+                const String failed = _currentSsid;
+                const String reason = wifiFailureReason(status);
+                Serial.printf("[WIFI] Falló '%s': %s (status=%d)\n", failed.c_str(),
+                              reason.c_str(), static_cast<int>(status));
                 WiFi.disconnect();
-                _tryNext();
+                _tryNext(failed, reason);
             } else if (now - _stateSince >= CONNECT_TIMEOUT_MS) {
-                Serial.printf("[WIFI] Timeout conectando a '%s' (status=%d); intentando otra red\n",
-                              _candidates[_candidate - 1].c_str(), static_cast<int>(status));
+                const String failed = _currentSsid;
+                const String reason = String("Timeout; status=") + String(static_cast<int>(status));
+                Serial.printf("[WIFI] Timeout conectando a '%s' (status=%d)\n",
+                              failed.c_str(), static_cast<int>(status));
                 WiFi.disconnect();
-                _tryNext();
+                _tryNext(failed, reason);
             }
             break;
         }
-
         case State::Connected:
         default:
             break;
@@ -115,26 +159,24 @@ void NetManager::_startScan() {
     const int16_t result = WiFi.scanNetworks(true);
     if (result == WIFI_SCAN_FAILED) {
         _lastError = "Escaneo WiFi fallido";
-        Serial.printf("[WIFI] %s (status=%d); reintento en %lu ms\n",
-                      _lastError.c_str(), static_cast<int>(result),
-                      _store.get().retryMs);
+        Serial.printf("[WIFI] %s (status=%d); siguiente paso: reintentar en %lu ms\n",
+                      _lastError.c_str(), static_cast<int>(result), _store.get().retryMs);
         _state = State::Backoff;
         _lastScan = millis();
+        _showTransientMessage("Error escaneo", "Reintento 5s");
     }
 }
 
 void NetManager::_pollScan() {
     const int16_t count = WiFi.scanComplete();
-    if (count == WIFI_SCAN_RUNNING) {
-        return;
-    }
+    if (count == WIFI_SCAN_RUNNING) return;
     if (count < 0) {
         _lastError = "Escaneo WiFi fallido";
-        Serial.printf("[WIFI] %s (status=%d); reintento en %lu ms\n",
-                      _lastError.c_str(), static_cast<int>(count),
-                      _store.get().retryMs);
+        Serial.printf("[WIFI] %s (status=%d); siguiente paso: reintentar en %lu ms\n",
+                      _lastError.c_str(), static_cast<int>(count), _store.get().retryMs);
         _state = State::Backoff;
         _lastScan = millis();
+        _showTransientMessage("Error escaneo", "Reintento 5s");
         return;
     }
 
@@ -142,9 +184,7 @@ void NetManager::_pollScan() {
     Serial.printf("[WIFI] Escaneo terminado: %d red(es) detectada(s)\n", count);
     for (int i = 0; i < count; ++i) {
         const String ssid = WiFi.SSID(i);
-        if (ssid.length() == 0) {
-            continue;
-        }
+        if (ssid.length() == 0) continue;
         WifiStatus status;
         status.ssid = ssid;
         status.rssi = WiFi.RSSI(i);
@@ -153,8 +193,8 @@ void NetManager::_pollScan() {
         status.visible = true;
         status.connected = false;
         _scan.push_back(status);
-        Serial.printf("[WIFI] Detectada '%s' (%d dBm)%s\n", ssid.c_str(),
-                      status.rssi, status.stored ? " [guardada]" : "");
+        Serial.printf("[WIFI] Detectada '%s' (%d dBm)%s\n", ssid.c_str(), status.rssi,
+                      status.stored ? " [guardada]" : "");
     }
 
     WiFi.scanDelete();
@@ -162,12 +202,15 @@ void NetManager::_pollScan() {
     _candidate = 0;
     Serial.printf("[WIFI] Intentaré %u red(es) guardada(s) en prioridad\n",
                   static_cast<unsigned>(_candidates.size()));
+    if (count == 0) {
+        Serial.println("[WIFI] No hay redes visibles; probaré las guardadas como redes ocultas");
+        _showTransientMessage("No hay redes", "Pruebo config. 2.4G");
+    }
     _tryNext();
 }
 
 void NetManager::_buildCandidates() {
     _candidates.clear();
-
     // Primero, redes guardadas y visibles respetando su prioridad.
     for (const auto& entry : _store.get().wifi) {
         for (const auto& status : _scan) {
@@ -177,9 +220,8 @@ void NetManager::_buildCandidates() {
             }
         }
     }
-
-    // No excluir el resto de redes guardadas: pueden estar ocultas, tener
-    // escaneo incompleto o estar disponibles aunque otra red visible falle.
+    // No excluir las restantes redes guardadas: pueden estar ocultas o el
+    // escaneo puede ser incompleto.
     for (const auto& entry : _store.get().wifi) {
         bool alreadyAdded = false;
         for (const auto& ssid : _candidates) {
@@ -188,13 +230,18 @@ void NetManager::_buildCandidates() {
                 break;
             }
         }
-        if (!alreadyAdded) {
-            _candidates.push_back(entry.ssid);
-        }
+        if (!alreadyAdded) _candidates.push_back(entry.ssid);
     }
 }
 
-void NetManager::_tryNext() {
+void NetManager::_tryNext(const String& failedSsid, const String& reason) {
+    if (failedSsid.length() > 0) {
+        const String next = _nextSsid();
+        Serial.printf("[WIFI] Siguiente paso: %s\n", next.c_str());
+        _showTransientMessage(String("Fallo: ") + failedSsid,
+                              reason + String("; sigue ") + next);
+    }
+
     while (_candidate < _candidates.size()) {
         const String ssid = _candidates[_candidate++];
         const WifiEntry* entry = nullptr;
@@ -204,12 +251,11 @@ void NetManager::_tryNext() {
                 break;
             }
         }
-        if (entry == nullptr) {
-            continue;
-        }
+        if (entry == nullptr) continue;
 
-        Serial.printf("[WIFI] Intentando conectar a '%s' (%u/%u)...\n",
-                      ssid.c_str(), static_cast<unsigned>(_candidate),
+        _currentSsid = ssid;
+        Serial.printf("[WIFI] Intentando conectar a '%s' (%u/%u)...\n", ssid.c_str(),
+                      static_cast<unsigned>(_candidate),
                       static_cast<unsigned>(_candidates.size()));
         WiFi.begin(ssid.c_str(),
                    entry->password.length() > 0 ? entry->password.c_str() : nullptr);
@@ -220,8 +266,9 @@ void NetManager::_tryNext() {
 
     _state = State::Backoff;
     _lastScan = millis();
-    Serial.printf("[WIFI] No se pudo conectar a ninguna red; nueva búsqueda en %lu ms\n",
+    Serial.printf("[WIFI] No se pudo conectar a ninguna red; siguiente paso: reintento en %lu ms\n",
                   _store.get().retryMs);
+    _showTransientMessage("Sin conexión WiFi", "Reintento en 5s");
 }
 
 bool NetManager::addAndSave(const String& ssid, const String& password) {
@@ -229,11 +276,10 @@ bool NetManager::addAndSave(const String& ssid, const String& password) {
         _lastError = _store.lastError();
         return false;
     }
-
     if (!isConnected()) {
         Serial.printf("[WIFI] Nueva red '%s', intentando conectar...\n", ssid.c_str());
-        WiFi.begin(ssid.c_str(),
-                   password.length() > 0 ? password.c_str() : nullptr);
+        WiFi.begin(ssid.c_str(), password.length() > 0 ? password.c_str() : nullptr);
+        _currentSsid = ssid;
         _state = State::Connecting;
         _stateSince = millis();
     }
@@ -246,7 +292,6 @@ bool NetManager::removeAndSave(const String& ssid) {
         _lastError = _store.lastError();
         return false;
     }
-
     if (wasConnected) {
         WiFi.disconnect();
         _state = State::Idle;
@@ -276,7 +321,6 @@ void NetManager::requestScan() {
 String NetManager::networksJson() const {
     DynamicJsonDocument doc(4096);
     JsonArray array = doc.to<JsonArray>();
-
     const String connectedSsid = connectedSSID();
 
     for (size_t i = 0; i < _store.get().wifi.size(); ++i) {
@@ -290,7 +334,6 @@ String NetManager::networksJson() const {
                 break;
             }
         }
-
         JsonObject item = array.createNestedObject();
         item["ssid"] = entry.ssid;
         item["rssi"] = rssi;
@@ -302,9 +345,7 @@ String NetManager::networksJson() const {
     }
 
     for (const auto& status : _scan) {
-        if (status.stored) {
-            continue;
-        }
+        if (status.stored) continue;
         JsonObject item = array.createNestedObject();
         item["ssid"] = status.ssid;
         item["rssi"] = status.rssi;
@@ -314,7 +355,6 @@ String NetManager::networksJson() const {
         item["has_password"] = status.hasPassword;
         item["priority"] = -1;
     }
-
     String output;
     serializeJson(array, output);
     return output;
