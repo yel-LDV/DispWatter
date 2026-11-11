@@ -3,7 +3,7 @@
 #include <ArduinoJson.h>
 
 namespace {
-constexpr unsigned long CONNECT_TIMEOUT_MS = 8000;
+constexpr unsigned long CONNECT_TIMEOUT_MS = 10000;
 constexpr unsigned long SCAN_DELAY_MS = 500;
 } // namespace
 
@@ -21,6 +21,14 @@ void NetManager::begin() {
     _lastScan = 0;
     _candidate = 0;
     _wasConnected = false;
+
+    Serial.printf("[WIFI] Inicializado en modo estación; hay %u red(es) guardada(s)\n",
+                  static_cast<unsigned>(_store.get().wifi.size()));
+    for (size_t i = 0; i < _store.get().wifi.size(); ++i) {
+        Serial.printf("[WIFI] Red configurada %u: '%s'\n",
+                      static_cast<unsigned>(i + 1),
+                      _store.get().wifi[i].ssid.c_str());
+    }
 }
 
 bool NetManager::isConnected() const {
@@ -57,7 +65,7 @@ void NetManager::update() {
         _wasConnected = false;
         _state = State::Idle;
         _lastScan = 0;
-        Serial.println("[WIFI] Conexion perdida");
+        Serial.println("[WIFI] Conexión perdida; reiniciando búsqueda");
     }
 
     switch (_state) {
@@ -77,13 +85,21 @@ void NetManager::update() {
             _pollScan();
             break;
 
-        case State::Connecting:
-            if (now - _stateSince >= CONNECT_TIMEOUT_MS) {
-                Serial.println("[WIFI] Timeout, probando la siguiente red...");
+        case State::Connecting: {
+            const wl_status_t status = WiFi.status();
+            if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) {
+                Serial.printf("[WIFI] Falló '%s' (status=%d); intentando otra red\n",
+                              _candidates[_candidate - 1].c_str(), static_cast<int>(status));
+                WiFi.disconnect();
+                _tryNext();
+            } else if (now - _stateSince >= CONNECT_TIMEOUT_MS) {
+                Serial.printf("[WIFI] Timeout conectando a '%s' (status=%d); intentando otra red\n",
+                              _candidates[_candidate - 1].c_str(), static_cast<int>(status));
                 WiFi.disconnect();
                 _tryNext();
             }
             break;
+        }
 
         case State::Connected:
         default:
@@ -95,9 +111,13 @@ void NetManager::_startScan() {
     _state = State::Scanning;
     _stateSince = millis();
     WiFi.scanDelete();
+    Serial.println("[WIFI] Escaneando redes WiFi...");
     const int16_t result = WiFi.scanNetworks(true);
     if (result == WIFI_SCAN_FAILED) {
         _lastError = "Escaneo WiFi fallido";
+        Serial.printf("[WIFI] %s (status=%d); reintento en %lu ms\n",
+                      _lastError.c_str(), static_cast<int>(result),
+                      _store.get().retryMs);
         _state = State::Backoff;
         _lastScan = millis();
     }
@@ -110,12 +130,16 @@ void NetManager::_pollScan() {
     }
     if (count < 0) {
         _lastError = "Escaneo WiFi fallido";
+        Serial.printf("[WIFI] %s (status=%d); reintento en %lu ms\n",
+                      _lastError.c_str(), static_cast<int>(count),
+                      _store.get().retryMs);
         _state = State::Backoff;
         _lastScan = millis();
         return;
     }
 
     _scan.clear();
+    Serial.printf("[WIFI] Escaneo terminado: %d red(es) detectada(s)\n", count);
     for (int i = 0; i < count; ++i) {
         const String ssid = WiFi.SSID(i);
         if (ssid.length() == 0) {
@@ -129,18 +153,22 @@ void NetManager::_pollScan() {
         status.visible = true;
         status.connected = false;
         _scan.push_back(status);
+        Serial.printf("[WIFI] Detectada '%s' (%d dBm)%s\n", ssid.c_str(),
+                      status.rssi, status.stored ? " [guardada]" : "");
     }
 
     WiFi.scanDelete();
     _buildCandidates();
     _candidate = 0;
+    Serial.printf("[WIFI] Intentaré %u red(es) guardada(s) en prioridad\n",
+                  static_cast<unsigned>(_candidates.size()));
     _tryNext();
 }
 
 void NetManager::_buildCandidates() {
     _candidates.clear();
 
-    // 1) Redes guardadas visibles, respetando el orden manual.
+    // Primero, redes guardadas y visibles respetando su prioridad.
     for (const auto& entry : _store.get().wifi) {
         for (const auto& status : _scan) {
             if (status.ssid == entry.ssid) {
@@ -150,9 +178,17 @@ void NetManager::_buildCandidates() {
         }
     }
 
-    // 2) Si no hay ninguna visible, intentar todas (redes ocultas).
-    if (_candidates.empty()) {
-        for (const auto& entry : _store.get().wifi) {
+    // No excluir el resto de redes guardadas: pueden estar ocultas, tener
+    // escaneo incompleto o estar disponibles aunque otra red visible falle.
+    for (const auto& entry : _store.get().wifi) {
+        bool alreadyAdded = false;
+        for (const auto& ssid : _candidates) {
+            if (ssid == entry.ssid) {
+                alreadyAdded = true;
+                break;
+            }
+        }
+        if (!alreadyAdded) {
             _candidates.push_back(entry.ssid);
         }
     }
@@ -172,7 +208,9 @@ void NetManager::_tryNext() {
             continue;
         }
 
-        Serial.printf("[WIFI] Intentando '%s'...\n", ssid.c_str());
+        Serial.printf("[WIFI] Intentando conectar a '%s' (%u/%u)...\n",
+                      ssid.c_str(), static_cast<unsigned>(_candidate),
+                      static_cast<unsigned>(_candidates.size()));
         WiFi.begin(ssid.c_str(),
                    entry->password.length() > 0 ? entry->password.c_str() : nullptr);
         _state = State::Connecting;
@@ -182,6 +220,8 @@ void NetManager::_tryNext() {
 
     _state = State::Backoff;
     _lastScan = millis();
+    Serial.printf("[WIFI] No se pudo conectar a ninguna red; nueva búsqueda en %lu ms\n",
+                  _store.get().retryMs);
 }
 
 bool NetManager::addAndSave(const String& ssid, const String& password) {
