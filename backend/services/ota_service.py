@@ -1,6 +1,8 @@
 import hashlib
 import json
 import logging
+import os
+import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
@@ -14,6 +16,32 @@ OTA_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "ota_config.js
 
 GITHUB_REPO = "yel-LDV/DispWatter"
 GITHUB_API_BASE = "https://api.github.com/repos/yel-LDV/DispWatter"
+
+
+def _get_github_token() -> Optional[str]:
+    """Get GitHub token from environment or gh CLI."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        return token
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token", "--git-token"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _github_headers() -> dict[str, str]:
+    """Build headers for GitHub API requests with auth if available."""
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    token = _get_github_token()
+    if token:
+        headers["Authorization"] = f"token {token}"
+    return headers
 
 
 def _load_ota_config() -> dict[str, Any]:
@@ -148,7 +176,7 @@ async def push_to_device(
 async def _fetch_releases() -> list[dict[str, Any]]:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{GITHUB_API_BASE}/releases") as resp:
+            async with session.get(f"{GITHUB_API_BASE}/releases", headers=_github_headers()) as resp:
                 if resp.status == 200:
                     releases = await resp.json()
                     enriched = []
@@ -166,7 +194,7 @@ async def _fetch_release(version_tag: str) -> Optional[dict[str, Any]]:
     tag = version_tag if version_tag.startswith("v") else f"v{version_tag}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{GITHUB_API_BASE}/releases/tags/{tag}") as resp:
+            async with session.get(f"{GITHUB_API_BASE}/releases/tags/{tag}", headers=_github_headers()) as resp:
                 if resp.status == 200:
                     release = await resp.json()
                     meta = await _fetch_metadata(release.get("assets", []))
@@ -187,7 +215,7 @@ async def _fetch_metadata(assets: list[dict]) -> dict[str, Any]:
         return {}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(meta_asset["url"]) as resp:
+            async with session.get(meta_asset["browser_download_url"], headers=_github_headers()) as resp:
                 if resp.status == 200:
                     return await resp.json()
     except Exception as exc:
@@ -200,7 +228,7 @@ async def _get_firmware_url(version_tag: str) -> Optional[str]:
     if not release:
         return None
     firmware_asset = _find_firmware_asset(release.get("assets", []))
-    return firmware_asset.get("url") if firmware_asset else None
+    return firmware_asset.get("browser_download_url") if firmware_asset else None
 
 
 async def _download_checksum(version_tag: str) -> Optional[str]:
@@ -216,7 +244,7 @@ async def _download_checksum(version_tag: str) -> Optional[str]:
         return None
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(checksum_asset["url"]) as resp:
+            async with session.get(checksum_asset["browser_download_url"], headers=_github_headers()) as resp:
                 if resp.status == 200:
                     return (await resp.text()).strip()
     except Exception as exc:
