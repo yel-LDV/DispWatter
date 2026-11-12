@@ -1,0 +1,8 @@
+{
+  "verified_branches": ["main", "stable"],
+  "unverified_branches": ["develop", "feature/*"],
+  "fork_detection": true,
+  "original_repository": "yel-LDV/DispWatter",
+  "version_format": "semver",
+  "ota_partition_size": 1310720
+}

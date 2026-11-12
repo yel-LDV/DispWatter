@@ -50,17 +50,44 @@ void LcdDisplay::refresh(float percent, float liters, float distanceMm, bool pum
     scrollLine(1, _line1Text, _scrollPos1, _lastScroll1, _scrollPauseStart1, _scrolling1, _paused1);
 }
 
-void LcdDisplay::showClaimCode(const String& code) {
+void LcdDisplay::showClaimCode(const String& code, int expiresIn) {
     _showingClaim = true;
     _claimCode = code;
-    _claimExpiry = millis() + 20000; // 20 seconds
+    _claimExpiry = millis() + (unsigned long)expiresIn * 1000UL;
+    _claimFailUntil = 0;
     
     _lcd->clear();
     _lcd->setCursor(0, 0);
     _lcd->print("CODIGO CLAIM:");
     _lcd->setCursor(4, 1);
     _lcd->print(code);
-    _lcd->print("   ");
+    _lcd->print(" ");
+    _lcd->print(expiresIn);
+    _lcd->print("s     ");
+}
+
+void LcdDisplay::updateClaimCountdown() {
+    if (!_showingClaim) return;
+    
+    unsigned long now = millis();
+    if (now >= _claimExpiry) {
+        _showingClaim = false;
+        _claimCode = "";
+        _claimExpiry = 0;
+        _claimFailUntil = now + 5000UL;
+        _lcd->clear();
+        _lcd->setCursor(0, 0);
+        _lcd->print("CODIGO EXPIRADO");
+        _lcd->setCursor(0, 1);
+        _lcd->print("Espera 5s...");
+        return;
+    }
+    
+    int seconds = (int)((_claimExpiry - now) / 1000);
+    
+    _lcd->setCursor(11, 1);
+    _lcd->print(seconds);
+    _lcd->print("s     ");
 }
 
 void LcdDisplay::showStandalone() {

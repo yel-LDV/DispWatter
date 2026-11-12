@@ -18,8 +18,11 @@ public:
     // Update display with current data
     void refresh(float percent, float liters, float distanceMm, bool pumpOn);
     
-    // Show claim code (6 digits)
-    void showClaimCode(const String& code);
+    // Show claim code (6 digits) with countdown
+    void showClaimCode(const String& code, int expiresIn);
+    
+    // Update claim countdown display
+    void updateClaimCountdown();
     
     // Show standalone mode message
     void showStandalone();
@@ -74,6 +77,7 @@ private:
     bool _showingClaim = false;
     String _claimCode;
     unsigned long _claimExpiry = 0;
+    unsigned long _claimFailUntil = 0;
     
     // Format distance based on unit
     String formatDistance(float distanceMm);

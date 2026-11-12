@@ -12,9 +12,10 @@
 // Pines
 #define PIN_TRIG           5
 #define PIN_ECHO           18
-#define PIN_RELE           4
+#define PIN_RELE           23
 #define LCD_I2C_ADDR       0x27
 #define WAKE_PIN           33
+#define BTN_POWER_PIN      32
 
 // Relé: polaridad por defecto de la lógica del módulo.
 //   1 = módulo activo en LOW  (IN a GND  -> bobina activada)

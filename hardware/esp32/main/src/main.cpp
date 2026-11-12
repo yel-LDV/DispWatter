@@ -11,6 +11,17 @@
 #include "NetManager.h"
 #include "PowerManager.h"
 #include "Relay.h"
+#include "OtaReceiver.h"
+#include "ButtonNav.h"
+
+// Button GPIO pins — DISABLED until physical buttons are connected.
+// Floating pins cause false presses that override the LCD.
+// #define BTN_UP_PIN     15
+// #define BTN_DOWN_PIN    2
+// #define BTN_LEFT_PIN   21
+// #define BTN_RIGHT_PIN  16
+// #define BTN_OK_PIN      0
+// #define BTN_POWER_PIN  32
 
 I2C lcd(LCD_I2C_ADDR);
 HC_SR04 sensor(PIN_TRIG, PIN_ECHO, 5);
@@ -20,6 +31,8 @@ Crypto crypto;
 DispComm comm(crypto, configStore, net);
 Relay relay;
 PowerManager power;
+OtaReceiver ota;
+// ButtonNav buttons;  // DISABLED
 
 unsigned long lastSample = 0;
 unsigned long lastLcdRefresh = 0;
@@ -40,12 +53,94 @@ String padLine(const String& text) {
     return out;
 }
 
+// Developer mode menu state
+bool devModeActive = false;
+int devMenuIndex = 0;
+const int DEV_MENU_ITEMS = 4;
+const char* devMenuLabels[] = {"Reiniciar", "Desvincular", "Info firmware", "Info red"};
+
 void showLines(const String& line0, const String& line1) {
     lcd.print(0, 0, padLine(line0));
     lcd.print(0, 1, padLine(line1));
 }
 
+// Claim code display state
+bool showingClaimCode = false;
+String currentClaimCode;
+unsigned long claimCodeExpiry = 0;
+unsigned long claimFailUntil = 0;  // block new claims after expiry
+
+void onClaimCode(const String& code, int expiresIn) {
+    showingClaimCode = true;
+    currentClaimCode = code;
+    claimCodeExpiry = millis() + (unsigned long)expiresIn * 1000UL;
+    claimFailUntil = 0;
+    lcd.clean();
+    lcd.print(0, 0, padLine("CODIGO CLAIM:"));
+    String line = "  " + code + " ";
+    line += String(expiresIn);
+    line += "s     ";
+    lcd.print(0, 1, padLine(line));
+    Serial.printf("[CLAIM] Código %s por %ds\n", code.c_str(), expiresIn);
+}
+
+void onClaimVerified() {
+    showingClaimCode = false;
+    currentClaimCode = "";
+    claimCodeExpiry = 0;
+    claimFailUntil = 0;
+    lcd.clean();
+    lcd.print(0, 0, padLine("VINCULADO"));
+    lcd.print(0, 1, padLine("Dispositivo activo"));
+    Serial.println("[CLAIM] Dispositivo vinculado exitosamente");
+}
+
+void updateClaimCountdown() {
+    if (!showingClaimCode) return;
+    
+    unsigned long now = millis();
+    if (now >= claimCodeExpiry) {
+        // Code expired - show failure message
+        showingClaimCode = false;
+        currentClaimCode = "";
+        claimCodeExpiry = 0;
+        claimFailUntil = now + 5000UL;  // wait 5 seconds
+        lcd.clean();
+        lcd.print(0, 0, padLine("CODIGO EXPIRADO"));
+        lcd.print(0, 1, padLine("Espera 5s..."));
+        Serial.println("[CLAIM] Código expirado");
+        return;
+    }
+    
+    int seconds = (int)((claimCodeExpiry - now) / 1000);
+    String line = "  " + currentClaimCode + " ";
+    line += String(seconds);
+    line += "s     ";
+    lcd.print(0, 1, padLine(line));
+}
+
 void refreshLcd() {
+    if (showingClaimCode) {
+        updateClaimCountdown();
+        return;
+    }
+
+    // Show failure countdown after claim expiry
+    if (claimFailUntil > 0) {
+        unsigned long now = millis();
+        if (now < claimFailUntil) {
+            int remaining = (int)((claimFailUntil - now) / 1000);
+            lcd.clean();
+            lcd.print(0, 0, padLine("CODIGO EXPIRADO"));
+            String failLine = "Espera ";
+            failLine += String(remaining);
+            failLine += "s para nuevo";
+            lcd.print(0, 1, padLine(failLine));
+            return;
+        }
+        claimFailUntil = 0;
+    }
+
     if (millis() < displayOverrideUntil) return;
     const DeviceConfig& cfg = configStore.get();
 
@@ -62,7 +157,6 @@ void refreshLcd() {
             showLines("Buscando servicio", cfg.deviceId);
         }
     } else {
-        // Línea 1: porcentaje de agua y litros.  Línea 2: bomba ON/OFF y distancia.
         const bool levelFresh = lastLevelMs != 0 && (millis() - lastLevelMs) < LEVEL_STALE_MS;
         String line0 = levelFresh ? String(lastPercent, 0) + "%" : String("--%");
         line0 += " ";
@@ -135,6 +229,35 @@ void onFactoryReset() {
     ESP.restart();
 }
 
+void onOtaStart(const String& version, size_t size) {
+    Serial.printf("[OTA] Inicio version=%s size=%u\n", version.c_str(), size);
+    showLines("OTA: " + version, "Espera...");
+}
+
+void onOtaChunk(uint8_t* data, size_t len) {
+    ota.receiveChunk(data, len);
+    static unsigned long lastProgress = 0;
+    unsigned long now = millis();
+    if (now - lastProgress >= 1000UL) {
+        lastProgress = now;
+        float prog = ota.progress();
+        String line = String("OTA ") + String(prog, 0) + "%";
+        lcd.print(0, 1, padLine(line));
+    }
+}
+
+void onOtaComplete() {
+    Serial.println("[OTA] Descarga completa, presiona OK");
+    showLines("OTA lista", "Presiona OK");
+    ota.confirm();
+}
+
+// Button callbacks — DISABLED until physical buttons are connected
+// void onButtonPress() { ... }
+// void onButtonLongPress() { ... }
+// void onPowerPress() { ... }
+// void handleDevMenu() { ... }
+
 void setup() {
     Serial.begin(115200);
     delay(200);
@@ -175,7 +298,14 @@ void setup() {
     comm.onReboot(onReboot);
     comm.onSleep(onSleep);
     comm.onFactoryReset(onFactoryReset);
+    comm.onOtaStart(onOtaStart);
+    comm.onOtaChunk(onOtaChunk);
+    comm.onOtaComplete(onOtaComplete);
+    comm.onClaimCode(onClaimCode);
+    comm.onClaimVerified(onClaimVerified);
     comm.begin();
+    ota.begin();
+    // buttons.begin(...) — DISABLED until physical buttons are connected
     showLines("Buscando WiFi", configStore.get().deviceId);
 }
 
@@ -187,8 +317,11 @@ void loop() {
 
     net.update();
     comm.update();
+    // buttons.update();  // DISABLED
     const unsigned long now = millis();
     const DeviceConfig& cfg = configStore.get();
+
+    // Developer mode menu — DISABLED until physical buttons are connected
 
     // Fail-safe inmediato: el relé no debe quedar activo sin Wi-Fi/backend.
     if ((!net.isConnected() || !backendAuthenticated) && relay.state()) {

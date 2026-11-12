@@ -1,17 +1,20 @@
 import { initAuth, tryResume } from "./auth.js";
 import { initDevices, renderDashboard, renderDeviceSelect, updateDeviceStatus, updateRelayState, updateTelemetry } from "./devices.js";
-import { initWifi, renderWifi, refreshWifi } from "./wifi.js";
 import { initSystem } from "./system.js";
 import { initAudit, loadAudit, renderAudit } from "./audit.js";
 import { initTheme } from "./theme.js";
 import { initRegister } from "./register.js";
+import { initDevicesList } from "./devices_list.js";
+import { initHistory } from "./history.js";
+import { initLcdConfig } from "./lcd_config.js";
+import { initPermissions } from "./permissions.js";
 import { state, selectedDevice } from "./state.js";
 import { backendEndpoint, socket, on } from "./ws.js";
 import { el, toast } from "./ui.js";
 
 const VIEW_TITLES = {
   dashboard: "Dashboard",
-  networks: "Redes WiFi",
+  devices: "Dispositivos",
   device: "Dispositivo",
   audit: "Auditoría",
   history: "Historial",
@@ -44,21 +47,18 @@ function showView(name) {
   });
   el("viewTitle").textContent = VIEW_TITLES[name] || name;
   if (name === "dashboard") renderDashboard(false);
-  if (name === "networks") {
-    renderWifi();
-    const dev = selectedDevice();
-    if (dev?.online) refreshWifi();
-  }
   if (name === "device") renderDashboard(true);
   if (name === "audit") loadAudit();
 }
 
 function handleSync(message) {
-  state.devices = Array.isArray(message.devices) ? message.devices : [];
+  // Backend sends "online_devices" and "all_devices"
+  state.devices = Array.isArray(message.online_devices) ? message.online_devices : [];
+  state.allDevices = Array.isArray(message.all_devices) ? message.all_devices : state.devices;
   renderDeviceSelect();
   renderDashboard(true);
-  renderWifi();
   if (currentView === "audit") loadAudit();
+  if (currentView === "devices") initDevicesList();
 }
 
 function authenticated() {
@@ -111,8 +111,6 @@ function bindSocket() {
 function bindDeviceChanges() {
   window.addEventListener("device-changed", () => {
     const dev = selectedDevice();
-    renderWifi();
-    if (dev?.online && currentView === "networks") refreshWifi();
   });
 }
 
@@ -123,11 +121,14 @@ document.addEventListener("DOMContentLoaded", () => {
   el("backendEndpoint").textContent = backendEndpoint();
   initAuth(authenticated);
   initDevices();
-  initWifi();
+  initDevicesList();
   // initSystem conserva las acciones remotas del dispositivo (reinicio/sleep/reset),
   // pero el apartado de control de servicios del servidor ya no forma parte del panel.
   initSystem();
   initAudit();
+  initHistory();
+  initLcdConfig();
+  initPermissions();
   bindNav();
   bindPasswordToggles();
   bindSocket();

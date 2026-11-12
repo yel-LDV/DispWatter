@@ -40,11 +40,24 @@ async def get_device_in_session(session, device_id: str) -> Optional[Device]:
     return result.scalar_one_or_none()
 
 
+async def get_device_by_serial(serial_number: str) -> Optional[Device]:
+    async with get_db() as session:
+        result = await session.execute(select(Device).where(Device.serial_number == serial_number))
+        return result.scalar_one_or_none()
+
+
+async def get_all_serial_numbers() -> List[str]:
+    async with get_db() as session:
+        result = await session.execute(select(Device.serial_number).where(Device.serial_number.isnot(None)))
+        return [row[0] for row in result.all() if row[0]]
+
+
 async def ensure_device(
     device_id: str,
     name: str,
     location: str,
     firmware: str,
+    serial_number: str = "",
 ) -> Device:
     async with get_db() as session:
         device = await get_device_in_session(session, device_id)
@@ -54,6 +67,7 @@ async def ensure_device(
                 name=name or f"Bebedero {device_id}",
                 location=location or "Sin ubicación",
                 firmware_version=firmware or "1.0.0",
+                serial_number=serial_number if serial_number else None,
                 key_hash=None,
                 status="PENDING_CLAIM",
                 is_online=False,
@@ -75,6 +89,8 @@ async def ensure_device(
                     device.location = location
             if firmware:
                 device.firmware_version = firmware
+            if serial_number and not device.serial_number:
+                device.serial_number = serial_number
             await session.commit()
         return device
 
@@ -85,6 +101,7 @@ async def ensure_device_in_session(
     name: str,
     location: str,
     firmware: str,
+    serial_number: str = "",
 ) -> Device:
     device = await get_device_in_session(session, device_id)
     if device is None:
@@ -93,6 +110,7 @@ async def ensure_device_in_session(
             name=name or f"Bebedero {device_id}",
             location=location or "Sin ubicación",
             firmware_version=firmware or "1.0.0",
+            serial_number=serial_number if serial_number else None,
             key_hash=None,
             status="PENDING_CLAIM",
             is_online=False,
@@ -114,6 +132,8 @@ async def ensure_device_in_session(
                 device.location = location
         if firmware:
             device.firmware_version = firmware
+        if serial_number and not device.serial_number:
+            device.serial_number = serial_number
         await session.commit()
     return device
 
@@ -219,6 +239,21 @@ async def delete_device(device_id: str) -> None:
         await session.commit()
 
 
+async def release_device(device_id: str) -> None:
+    """Release a device: reset to PENDING_CLAIM without deleting.
+    Clears key_hash, owner_id, and status so it can be re-claimed with the same token.
+    Preserves device history, telemetry, tank config, and LCD config."""
+    async with get_db() as session:
+        device = await get_device_in_session(session, device_id)
+        if device is None:
+            return
+        device.key_hash = None
+        device.status = "PENDING_CLAIM"
+        device.owner_id = None
+        await session.commit()
+        logger.info("Dispositivo %s liberado para re-vinculación", device_id)
+
+
 # ---------------------------------------------------------------------------
 # User
 # ---------------------------------------------------------------------------
@@ -241,6 +276,16 @@ async def update_user_last_login(user_id: str) -> None:
             update(User)
             .where(User.id == user_id)
             .values(last_login=datetime.utcnow())
+        )
+        await session.commit()
+
+
+async def update_user_password(user_id: str, password_hash: str) -> None:
+    async with get_db() as session:
+        await session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(password_hash=password_hash)
         )
         await session.commit()
 
@@ -509,7 +554,7 @@ async def get_user_by_email(email: str) -> Optional[User]:
 
 
 async def create_user(
-    username: str, email: str, password_hash: str, role: str = "user"
+    username: str, email: str, password_hash: str, role: str = "user", is_verified: bool = True
 ) -> User:
     async with get_db() as session:
         user = User(
@@ -519,7 +564,7 @@ async def create_user(
             password_hash=password_hash,
             role=role,
             is_active=True,
-            is_verified=False,
+            is_verified=is_verified,
         )
         session.add(user)
         await session.commit()
@@ -636,6 +681,45 @@ async def revoke_permission(device_id: str, user_id: str) -> None:
                 DevicePermission.user_id == user_id,
             )
         )
+        await session.commit()
+
+
+async def set_granular_permission(
+    device_id: str, user_id: str, permission: str, value: bool
+) -> None:
+    async with get_db() as session:
+        perm = await session.execute(
+            select(DevicePermission).where(
+                DevicePermission.device_id == device_id,
+                DevicePermission.user_id == user_id,
+            )
+        )
+        perm = perm.scalar_one_or_none()
+        if perm is None:
+            perm = DevicePermission(device_id=device_id, user_id=user_id, role="viewer")
+            session.add(perm)
+        if hasattr(perm, permission):
+            setattr(perm, permission, value)
+        await session.commit()
+
+
+async def set_all_granular_permissions(
+    device_id: str, user_id: str, permissions: Dict[str, bool]
+) -> None:
+    async with get_db() as session:
+        perm = await session.execute(
+            select(DevicePermission).where(
+                DevicePermission.device_id == device_id,
+                DevicePermission.user_id == user_id,
+            )
+        )
+        perm = perm.scalar_one_or_none()
+        if perm is None:
+            perm = DevicePermission(device_id=device_id, user_id=user_id, role="viewer")
+            session.add(perm)
+        for field, value in permissions.items():
+            if hasattr(perm, field):
+                setattr(perm, field, value)
         await session.commit()
 
 

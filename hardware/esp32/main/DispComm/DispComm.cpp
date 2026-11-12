@@ -173,8 +173,9 @@ void DispComm::_handleJson(const char* json) {
     }
     if (event == "claim_code") {
         const String code = doc["code"] | "";
+        const int expiresIn = doc["expires_in"] | 15;
         if (_claimCodeCb && code.length() > 0) {
-            _claimCodeCb(code);
+            _claimCodeCb(code, expiresIn);
         }
         return;
     }
@@ -190,6 +191,39 @@ void DispComm::_handleJson(const char* json) {
         _setState(AuthState::Authenticated);
         _lastAuthMs = millis();
         _notifyConnection();
+        if (_claimVerifiedCb) _claimVerifiedCb();
+        return;
+    }
+    if (event == "ota_start") {
+        const String version = doc["version"] | "";
+        const size_t size = doc["size"] | 0;
+        if (_otaStartCb && version.length() > 0) {
+            _otaStartCb(version, size);
+        }
+        return;
+    }
+    if (event == "ota_chunk") {
+        if (_otaChunkCb && doc.containsKey("data")) {
+            String hexData = doc["data"] | "";
+            size_t len = hexData.length() / 2;
+            if (len > 0) {
+                uint8_t* bytes = new uint8_t[len];
+                for (size_t i = 0; i < len; i++) {
+                    bytes[i] = (uint8_t)strtol(hexData.c_str() + i * 2, nullptr, 16);
+                }
+                _otaChunkCb(bytes, len);
+                delete[] bytes;
+            }
+        }
+        return;
+    }
+    if (event == "ota_complete") {
+        if (_otaCompleteCb) {
+            _otaCompleteCb();
+        }
+        return;
+    }
+    if (event == "ota_error") {
         return;
     }
     if (doc.containsKey("command")) {

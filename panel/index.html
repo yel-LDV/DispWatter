@@ -71,8 +71,8 @@
                 <button class="nav-item active" data-view="dashboard" type="button">
                     <span class="nav-icon" aria-hidden="true">◉</span> Dashboard
                 </button>
-                <button class="nav-item" data-view="networks" type="button">
-                    <span class="nav-icon" aria-hidden="true">≋</span> Redes WiFi
+                <button class="nav-item" data-view="devices" type="button">
+                    <span class="nav-icon" aria-hidden="true">⚙</span> Dispositivos
                 </button>
                 <button class="nav-item" data-view="device" type="button">
                     <span class="nav-icon" aria-hidden="true">⚙</span> Dispositivo
@@ -203,56 +203,6 @@
                         </div>
                     </div>
 
-                    <div class="notice info">
-                        <span aria-hidden="true">◈</span>
-                        <span>Las contraseñas WiFi nunca se muestran ni se envían al navegador. El dispositivo es la fuente de verdad de las redes.</span>
-                    </div>
-                </section>
-
-                <!-- ==================== NETWORKS ==================== -->
-                <section id="view-networks" class="view hidden">
-                    <div class="section-title">
-                        <h2>Redes WiFi</h2>
-                        <span class="section-sub">Prioridad manual: se intentan en el orden mostrado.</span>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-head">
-                            <h2>Redes guardadas</h2>
-                            <button id="btnScanWifi" class="btn btn-ghost btn-sm" type="button">Escanear / refrescar</button>
-                        </div>
-                        <div id="networkList" class="network-list">
-                            <div class="empty-state">Selecciona un dispositivo para consultar sus redes.</div>
-                        </div>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-head">
-                            <h2>Añadir red</h2>
-                        </div>
-                        <form id="wifiAddForm" class="form-grid">
-                            <div class="field">
-                                <label for="wifiSsid">SSID</label>
-                                <input id="wifiSsid" name="ssid" type="text" maxlength="31" required>
-                            </div>
-                            <div class="field">
-                                <label for="wifiPassword">Contraseña</label>
-                                <div class="password-wrap">
-                                    <input id="wifiPassword" name="password" type="password" maxlength="63" autocomplete="new-password">
-                                    <button class="password-toggle" type="button" data-toggle-password="wifiPassword">Ver</button>
-                                </div>
-                                <span class="field-hint">Vacío = red abierta. Si no, entre 8 y 63 caracteres.</span>
-                            </div>
-                            <div class="btn-row" style="grid-column: 1 / -1;">
-                                <button class="btn btn-primary" type="submit">Guardar red</button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <div class="notice">
-                        <span aria-hidden="true">⚠</span>
-                        <span>Al borrar la red conectada, el dispositivo intentará la siguiente en la lista. La primera red es obligatoria.</span>
-                    </div>
                 </section>
 
                 <!-- ==================== DEVICE ==================== -->
@@ -419,6 +369,30 @@
                                 </thead>
                                 <tbody id="auditBody">
                                     <tr><td colspan="5" class="empty-state">Sin eventos cargados.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==================== DISPOSITIVOS ==================== -->
+                <section id="view-devices" class="view hidden">
+                    <div class="section-title">
+                        <h2>Dispositivos</h2>
+                        <span class="section-sub">Todos los dispositivos registrados con estado y firmware.</span>
+                    </div>
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Lista de dispositivos</h2>
+                            <button id="btnRefreshDevices" class="btn btn-ghost btn-sm" type="button">Actualizar</button>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr><th>Nombre</th><th>ID</th><th>Estado</th><th>Firmware</th><th>Última conexión</th><th>Acciones</th></tr>
+                                </thead>
+                                <tbody id="devicesBody">
+                                    <tr><td colspan="6" class="empty-state">Sin dispositivos.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -611,6 +585,6 @@
     <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
     <div id="modalRoot"></div>
 
-    <script type="module" src="js/app.js"></script>
+    <script type="module" src="js/app.js?v=2025111210"></script>
 </body>
 </html>

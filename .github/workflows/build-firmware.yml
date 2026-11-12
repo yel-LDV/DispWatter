@@ -1,0 +1,126 @@
+name: Build Firmware & Create Release
+
+on:
+  push:
+    branches: [main, stable, develop, 'feature/*']
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Firmware version (e.g., 1.0.0)'
+        required: true
+        default: '0.0.0'
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'experimental'
+        type: choice
+        options: [stable, experimental, insecure]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ ${{ github.ref_type }} == 'tag' ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          elif [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
+            VERSION=${{ github.event.inputs.version }}
+          else
+            VERSION="0.0.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
+            TYPE=${{ github.event.inputs.release_type }}
+          elif [[ ${{ github.ref }} == 'refs/heads/main' || ${{ github.ref }} == 'refs/heads/stable' ]]; then
+            TYPE="stable"
+          elif [[ ${{ github.ref }} == 'refs/heads/develop' || ${{ github.ref }} == refs/heads/feature/* ]]; then
+            TYPE="experimental"
+          else
+            TYPE="experimental"
+          fi
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+
+      - name: Check for fork
+        id: fork
+        run: |
+          if [[ "${{ github.repository }}" != "yel-LDV/DispWatter" ]]; then
+            echo "is_fork=true" >> $GITHUB_OUTPUT
+            echo "WARNING: Build from fork detected!"
+          else
+            echo "is_fork=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Override release type for forks
+        id: forktype
+        run: |
+          if [[ "${{ steps.fork.outputs.is_fork }}" == "true" ]]; then
+            echo "type=insecure" >> $GITHUB_OUTPUT
+          else
+            echo "type=${{ steps.version.outputs.type }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build firmware
+        working-directory: hardware/esp32/main
+        run: |
+          pio run -e esp32dev
+
+      - name: Extract firmware binary
+        run: |
+          FIRMWARE_PATH="hardware/esp32/main/.pio/build/esp32dev/firmware.bin"
+          if [ ! -f "$FIRMWARE_PATH" ]; then
+            echo "ERROR: firmware.bin not found!"
+            exit 1
+          fi
+          cp "$FIRMWARE_PATH" firmware-${{ steps.version.outputs.version }}.bin
+          sha256sum "firmware-${{ steps.version.outputs.version }}.bin" > checksum.sha256
+
+      - name: Create metadata
+        run: |
+          cat > metadata.json << EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "type": "${{ steps.forktype.outputs.type }}",
+            "branch": "${{ github.ref_name }}",
+            "commit": "${{ github.sha }}",
+            "is_fork": ${{ steps.fork.outputs.is_fork }},
+            "repository": "${{ github.repository }}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Create or update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: "Firmware v${{ steps.version.outputs.version }} (${{ steps.forktype.outputs.type }})"
+          body: |
+            **Firmware v${{ steps.version.outputs.version }}**
+
+            - Type: ${{ steps.forktype.outputs.type }}
+            - Branch: ${{ github.ref_name }}
+            - Commit: ${{ github.sha }}
+            - Fork: ${{ steps.fork.outputs.is_fork }}
+            - Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          files: |
+            firmware-${{ steps.version.outputs.version }}.bin
+            checksum.sha256
+            metadata.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
