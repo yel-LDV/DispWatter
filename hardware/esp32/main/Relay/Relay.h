@@ -31,7 +31,17 @@ public:
      * @return true si el guard actuó (apagó el relé).
      */
     bool guard(unsigned long now, unsigned long lastAuthMs,
-               unsigned long maxOnMs, unsigned long maxOfflineMs);
+               unsigned long maxOnMs, unsigned long maxOfflineMs,
+               unsigned long minOffMs, bool overflowProtection, float currentPercent, float maxPercent);
+
+    void setMinOffMs(unsigned long ms) { _minOffMs = ms; }
+    unsigned long getMinOffMs() const { return _minOffMs; }
+    
+    /**
+     * Check if relay can be turned on (min off time protection).
+     * @return true if the relay can be turned on.
+     */
+    bool canTurnOn(unsigned long now);
 
 private:
     uint8_t _levelFor(bool on) const;
@@ -40,6 +50,8 @@ private:
     bool _activeLow = true;
     bool _state = false;
     unsigned long _onSince = 0;
+    unsigned long _offSince = 0;  // When relay was last turned off
+    unsigned long _minOffMs = 180000;  // Default 3 minutes
 };
 
 #endif // RELAY_H

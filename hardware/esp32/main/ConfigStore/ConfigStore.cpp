@@ -111,6 +111,8 @@ bool ConfigStore::save() {
     JsonObject safety = doc.createNestedObject("safety");
     safety["max_relay_on_min"] = _cfg.maxRelayOnMin;
     safety["max_offline_min"] = _cfg.maxOfflineMin;
+    safety["min_relay_off_min"] = _cfg.minRelayOffMin;
+    safety["overflow_protection"] = _cfg.overflowProtection;
 
     if (_cfg.relayActiveLow >= 0) {
         JsonObject relayCfg = doc.createNestedObject("relay");
@@ -194,6 +196,8 @@ bool ConfigStore::_applyJson(JsonVariantConst root, DeviceConfig& out) {
     JsonObjectConst safety = root["safety"];
     out.maxRelayOnMin = safety["max_relay_on_min"] | 10;
     out.maxOfflineMin = safety["max_offline_min"] | 5;
+    out.minRelayOffMin = safety["min_relay_off_min"] | 3;
+    out.overflowProtection = safety["overflow_protection"] | true;
 
     JsonObjectConst relayCfg = root["relay"];
     if (!relayCfg.isNull() && relayCfg.containsKey("active_low")) {

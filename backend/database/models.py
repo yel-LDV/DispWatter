@@ -24,9 +24,11 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -36,8 +38,10 @@ class User(Base):
         return {
             "id": self.id,
             "username": self.username,
+            "email": self.email,
             "role": self.role,
             "is_active": self.is_active,
+            "is_verified": self.is_verified,
             "last_login": self.last_login.isoformat() if self.last_login else None,
         }
 
@@ -109,6 +113,10 @@ class TankConfig(Base):
     min_level_percent: Mapped[float] = mapped_column(Float, default=25.0)
     max_level_percent: Mapped[float] = mapped_column(Float, default=90.0)
     auto_refill: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Protección de bomba: tiempo mínimo de apagado entre arranques (en minutos)
+    min_relay_off_min: Mapped[float] = mapped_column(Float, default=3.0)
+    # Protección contra desborde: apagar bomba al superar máximo aunque auto esté off
+    overflow_protection: Mapped[bool] = mapped_column(Boolean, default=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now()
     )
@@ -123,6 +131,8 @@ class TankConfig(Base):
             "min_level": self.min_level_percent,
             "max_level": self.max_level_percent,
             "auto_refill": self.auto_refill,
+            "min_relay_off_min": self.min_relay_off_min,
+            "overflow_protection": self.overflow_protection,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
@@ -205,4 +215,110 @@ class AuditLog(Base):
             "actor": self.actor,
             "details": self.details,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class EmailVerification(Base):
+    """Tokens de verificación de email para registro de usuarios."""
+
+    __tablename__ = "email_verifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    token: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "email": self.email,
+            "user_id": self.user_id,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "used": self.used,
+        }
+
+
+class DevicePermission(Base):
+    """Permisos granulares por dispositivo para usuarios."""
+
+    __tablename__ = "device_permissions"
+    __table_args__ = (
+        UniqueConstraint("device_id", "user_id", name="uq_device_permission"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="viewer"
+    )  # owner, editor, viewer
+    granted_by: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    granted_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "device_id": self.device_id,
+            "user_id": self.user_id,
+            "role": self.role,
+            "granted_by": self.granted_by,
+            "granted_at": self.granted_at.isoformat() if self.granted_at else None,
+        }
+
+
+class LcdConfig(Base):
+    """Configuración del LCD por dispositivo."""
+
+    __tablename__ = "lcd_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("devices.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    # Formato de cada línea: percent, liters, distance, pump_status, custom, empty
+    line0_format: Mapped[str] = mapped_column(String(32), default="percent", nullable=False)
+    line1_format: Mapped[str] = mapped_column(String(32), default="liters", nullable=False)
+    # Velocidad del scroll en ms por paso (100-500)
+    scroll_speed: Mapped[int] = mapped_column(Integer, default=200)
+    # Pausa al final del scroll en segundos
+    scroll_pause: Mapped[int] = mapped_column(Integer, default=3)
+    # Unidad de distancia: cm, mm, m
+    distance_unit: Mapped[str] = mapped_column(String(8), default="cm")
+    # Textos personalizados
+    custom_text0: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    custom_text1: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Activar scroll en cada línea
+    show_scroll0: Mapped[bool] = mapped_column(Boolean, default=True)
+    show_scroll1: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now()
+    )
+
+    device: Mapped["Device"] = relationship("Device")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "device_id": self.device_id,
+            "line0_format": self.line0_format,
+            "line1_format": self.line1_format,
+            "scroll_speed": self.scroll_speed,
+            "scroll_pause": self.scroll_pause,
+            "distance_unit": self.distance_unit,
+            "custom_text0": self.custom_text0,
+            "custom_text1": self.custom_text1,
+            "show_scroll0": self.show_scroll0,
+            "show_scroll1": self.show_scroll1,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

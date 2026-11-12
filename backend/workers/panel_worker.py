@@ -47,13 +47,19 @@ async def _login(params: Dict[str, Any]) -> Dict[str, Any]:
     if user is None or not user.is_active or not verify_password(user.password_hash, password):
         return {"ok": False, "error": "unauthorized"}
 
+    # Check email verification (admin is always verified)
+    if not user.is_verified and user.role != "admin":
+        return {"ok": False, "error": "not_verified"}
+
     await db_service.update_user_last_login(user.id)
     return {
         "ok": True,
         "user": {
             "id": user.id,
             "username": user.username,
+            "email": user.email,
             "role": user.role,
+            "is_verified": user.is_verified,
         },
     }
 
@@ -63,12 +69,19 @@ async def _resume(params: Dict[str, Any]) -> Dict[str, Any]:
     user = await db_service.get_user_by_id(user_id)
     if user is None or not user.is_active:
         return {"ok": False, "error": "unauthorized"}
+    
+    # Check email verification (admin is always verified)
+    if not user.is_verified and user.role != "admin":
+        return {"ok": False, "error": "not_verified"}
+    
     return {
         "ok": True,
         "user": {
             "id": user.id,
             "username": user.username,
+            "email": user.email,
             "role": user.role,
+            "is_verified": user.is_verified,
         },
     }
 

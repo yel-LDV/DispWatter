@@ -15,6 +15,9 @@ typedef std::function<bool(bool state)> RelayCommandCallback;
 // Porcentaje y litros calculados por el backend (se reciben tras cada telemetría).
 typedef std::function<void(float percent, float liters)> LevelCallback;
 typedef std::function<void(const String& line0, const String& line1, bool clear)> DisplayCommandCallback;
+typedef std::function<void(const String& code)> ClaimCodeCallback;
+typedef std::function<void(const String& jsonConfig)> LcdConfigCallback;
+typedef std::function<void(const String& line0, const String& line1, bool clear)> DisplayCommandCallback;
 typedef std::function<void(bool isConnected)> ConnectionStatusCallback;
 typedef std::function<void()> RebootCallback;
 typedef std::function<void(uint16_t minutes)> SleepCallback;
@@ -37,6 +40,8 @@ public:
     void onReboot(RebootCallback cb) { _rebootCb = cb; }
     void onSleep(SleepCallback cb) { _sleepCb = cb; }
     void onFactoryReset(FactoryResetCallback cb) { _factoryResetCb = cb; }
+    void onClaimCode(ClaimCodeCallback cb) { _claimCodeCb = cb; }
+    void onLcdConfig(LcdConfigCallback cb) { _lcdConfigCb = cb; }
     bool isWsConnected() const { return _wsConnected; }
     bool isAuthenticated() const { return _state == AuthState::Authenticated; }
     bool isPendingClaim() const { return _state == AuthState::PendingClaim; }
@@ -80,6 +85,8 @@ private:
     RebootCallback _rebootCb;
     SleepCallback _sleepCb;
     FactoryResetCallback _factoryResetCb;
+    ClaimCodeCallback _claimCodeCb;
+    LcdConfigCallback _lcdConfigCb;
 };
 
 #endif // DISP_COMM_H

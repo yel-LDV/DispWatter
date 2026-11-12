@@ -34,7 +34,12 @@ struct DeviceConfig {
 
     uint16_t maxRelayOnMin = 10;
     uint16_t maxOfflineMin = 5;
-
+    
+    // Protección de bomba: tiempo mínimo de apagado entre arranques (minutos)
+    uint16_t minRelayOffMin = 3;
+    // Protección contra desborde
+    bool overflowProtection = true;
+    
     // Polaridad del módulo de relé ("relay.active_low" en config.json).
     //   -1 = no definida en el JSON -> se usa RELE_ACTIVE_LOW_DEFAULT (config.h)
     //    1 = activo en LOW, 0 = activo en HIGH

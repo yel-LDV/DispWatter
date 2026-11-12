@@ -171,6 +171,27 @@ void DispComm::_handleJson(const char* json) {
         }
         return;
     }
+    if (event == "claim_code") {
+        const String code = doc["code"] | "";
+        if (_claimCodeCb && code.length() > 0) {
+            _claimCodeCb(code);
+        }
+        return;
+    }
+    if (event == "lcd_config") {
+        if (_lcdConfigCb && doc.containsKey("config")) {
+            String jsonConfig;
+            serializeJson(doc["config"], jsonConfig);
+            _lcdConfigCb(jsonConfig);
+        }
+        return;
+    }
+    if (event == "claim_verified") {
+        _setState(AuthState::Authenticated);
+        _lastAuthMs = millis();
+        _notifyConnection();
+        return;
+    }
     if (doc.containsKey("command")) {
         _handleCommand(doc);
         return;

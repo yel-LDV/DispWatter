@@ -45,6 +45,9 @@
                 Entrar
             </button>
             <p class="field-hint" style="margin-top: 18px;">
+                <a href="#" id="showRegister">¿No tienes cuenta? Regístrate aquí</a>
+            </p>
+            <p class="field-hint" style="margin-top: 6px;">
                 El primer administrador se crea desde <span class="mono">backend/.env</span>
                 (ADMIN_USER / ADMIN_PASSWORD). Consulta <span class="mono">deploy/README.md</span>.
             </p>
@@ -80,6 +83,15 @@
                 <button class="nav-item" data-view="audit" type="button">
                     <span class="nav-icon" aria-hidden="true">⌁</span> Auditoría
                 </button>
+                <button class="nav-item" data-view="history" type="button">
+                    <span class="nav-icon" aria-hidden="true">📊</span> Historial
+                </button>
+                <button class="nav-item" data-view="lcd" type="button">
+                    <span class="nav-icon" aria-hidden="true">🖥</span> LCD
+                </button>
+                <button class="nav-item" data-view="permissions" type="button">
+                    <span class="nav-icon" aria-hidden="true">🔑</span> Permisos
+                </button>
             </nav>
 
             <div class="sidebar-foot">
@@ -108,6 +120,7 @@
                     </span>
 
                     <button id="btnLogout" class="btn btn-ghost btn-sm" type="button">Salir</button>
+                    <button id="themeToggle" class="btn btn-ghost btn-sm" type="button" title="Cambiar tema">🌙</button>
                 </div>
             </header>
 
@@ -411,8 +424,188 @@
                         </div>
                     </div>
                 </section>
+
+                <!-- ==================== HISTORIAL ==================== -->
+                <section id="view-history" class="view hidden">
+                    <div class="section-title">
+                        <h2>Historial</h2>
+                        <span class="section-sub">Telemetría del dispositivo seleccionado.</span>
+                    </div>
+                    <div class="card">
+                        <div class="card-head">
+                            <h2>Gráfico</h2>
+                            <div class="btn-row">
+                                <select id="historyPeriod" class="select-inline">
+                                    <option value="24h">24 horas</option>
+                                    <option value="7d" selected>7 días</option>
+                                    <option value="30d">30 días</option>
+                                </select>
+                                <button id="btnRefreshHistory" class="btn btn-ghost btn-sm" type="button">Actualizar</button>
+                            </div>
+                        </div>
+                        <div id="historyStats" class="form-grid" style="margin-bottom:16px;"></div>
+                        <canvas id="historyChart" height="200" style="width:100%;background:var(--card-bg);border-radius:8px;"></canvas>
+                        <div class="table-wrap" style="margin-top:16px;max-height:300px;overflow-y:auto;">
+                            <table>
+                                <thead>
+                                    <tr><th>Fecha</th><th>% Agua</th><th>Litros</th><th>Bomba</th></tr>
+                                </thead>
+                                <tbody id="historyBody">
+                                    <tr><td colspan="4" class="empty-state">Selecciona un dispositivo.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==================== LCD ==================== -->
+                <section id="view-lcd" class="view hidden">
+                    <div class="section-title">
+                        <h2>Configuración LCD</h2>
+                        <span class="section-sub">Personaliza qué se muestra en cada línea del display.</span>
+                    </div>
+                    <div class="card">
+                        <form id="lcdForm">
+                            <div class="form-grid">
+                                <div class="field">
+                                    <label for="lcdLine0">Línea 1</label>
+                                    <select id="lcdLine0" name="line0_format">
+                                        <option value="percent">Porcentaje de agua</option>
+                                        <option value="liters">Litros</option>
+                                        <option value="distance">Distancia</option>
+                                        <option value="pump_status">Estado bomba</option>
+                                        <option value="custom">Texto personalizado</option>
+                                        <option value="empty">Vacío</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label for="lcdLine1">Línea 2</label>
+                                    <select id="lcdLine1" name="line1_format">
+                                        <option value="percent">Porcentaje de agua</option>
+                                        <option value="liters" selected>Litros</option>
+                                        <option value="distance">Distancia</option>
+                                        <option value="pump_status">Estado bomba</option>
+                                        <option value="custom">Texto personalizado</option>
+                                        <option value="empty">Vacío</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label for="lcdDistanceUnit">Unidad distancia</label>
+                                    <select id="lcdDistanceUnit" name="distance_unit">
+                                        <option value="cm" selected>Centímetros (cm)</option>
+                                        <option value="mm">Milímetros (mm)</option>
+                                        <option value="m">Metros (m)</option>
+                                    </select>
+                                </div>
+                                <div class="field">
+                                    <label for="lcdScrollSpeed">Velocidad scroll (ms)</label>
+                                    <input id="lcdScrollSpeed" type="number" min="100" max="500" value="200">
+                                </div>
+                                <div class="field">
+                                    <label for="lcdScrollPause">Pausa final (seg)</label>
+                                    <input id="lcdScrollPause" type="number" min="1" max="10" value="3">
+                                </div>
+                                <div class="field">
+                                    <label for="lcdCustom0">Texto personalizado L1</label>
+                                    <input id="lcdCustom0" type="text" maxlength="64" placeholder="Texto opcional">
+                                </div>
+                                <div class="field">
+                                    <label for="lcdCustom1">Texto personalizado L2</label>
+                                    <input id="lcdCustom1" type="text" maxlength="64" placeholder="Texto opcional">
+                                </div>
+                            </div>
+                            <div class="btn-row" style="margin-top:16px;">
+                                <button class="btn btn-primary" type="submit">Guardar configuración</button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+
+                <!-- ==================== PERMISOS ==================== -->
+                <section id="view-permissions" class="view hidden">
+                    <div class="section-title">
+                        <h2>Permisos</h2>
+                        <span class="section-sub">Gestiona quién puede acceder a este dispositivo.</span>
+                    </div>
+                    <div class="card">
+                        <div class="card-head"><h2>Agregar permiso</h2></div>
+                        <form id="grantForm" class="form-grid">
+                            <div class="field">
+                                <label for="grantEmail">Correo del usuario</label>
+                                <input id="grantEmail" type="email" required placeholder="usuario@email.com">
+                            </div>
+                            <div class="field">
+                                <label for="grantRole">Rol</label>
+                                <select id="grantRole">
+                                    <option value="viewer">Viewer (solo ver)</option>
+                                    <option value="editor">Editor (control bomba + config)</option>
+                                    <option value="owner">Owner (todo)</option>
+                                </select>
+                            </div>
+                            <div class="btn-row">
+                                <button class="btn btn-primary" type="submit">Otorgar</button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="card" style="margin-top:16px;">
+                        <div class="card-head">
+                            <h2>Permisos actuales</h2>
+                            <button id="btnRefreshPerms" class="btn btn-ghost btn-sm" type="button">Actualizar</button>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr><th>Usuario</th><th>Correo</th><th>Rol</th><th>Acción</th></tr>
+                                </thead>
+                                <tbody id="permsBody">
+                                    <tr><td colspan="4" class="empty-state">Sin permisos.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
             </main>
         </div>
+    </div>
+
+    <!-- ============================ REGISTER ============================ -->
+    <div id="registerScreen" class="login-screen hidden">
+        <form id="registerForm" class="login-card" autocomplete="off">
+            <div class="login-brand">
+                <div class="logo-mark" aria-hidden="true">
+                    <img src="assets/logo.svg" alt="" width="28" height="28">
+                </div>
+                <div>
+                    <h1 class="brand-title">DispWatter</h1>
+                    <div class="brand-sub">Crear cuenta nueva</div>
+                </div>
+            </div>
+
+            <h2 class="login-title">Registro</h2>
+            <p class="login-hint">Crea una cuenta para acceder al panel.</p>
+
+            <div class="field">
+                <label for="registerEmail">Correo electrónico</label>
+                <input id="registerEmail" type="email" required>
+            </div>
+            <div class="field" style="margin-top: 14px;">
+                <label for="registerPassword">Contraseña</label>
+                <input id="registerPassword" type="password" minlength="6" required>
+            </div>
+            <div class="field" style="margin-top: 14px;">
+                <label for="registerConfirmPassword">Confirmar contraseña</label>
+                <input id="registerConfirmPassword" type="password" minlength="6" required>
+            </div>
+
+            <p id="registerError" class="login-error" role="alert"></p>
+            <p id="registerSuccess" class="field-hint" style="color: var(--success);"></p>
+            <button class="btn btn-primary" type="submit" style="width: 100%; margin-top: 10px;">
+                Registrarse
+            </button>
+            <p class="field-hint" style="margin-top: 18px;">
+                <a href="#" id="showLogin">¿Ya tienes cuenta? Inicia sesión</a>
+            </p>
+        </form>
     </div>
 
     <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>

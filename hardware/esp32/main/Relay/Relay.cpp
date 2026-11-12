@@ -31,6 +31,7 @@ void Relay::set(bool on) {
     }
     if (!on) {
         _onSince = 0;
+        _offSince = millis();
     }
     _state = on;
     digitalWrite(_pin, _levelFor(on));
@@ -39,11 +40,13 @@ void Relay::set(bool on) {
 void Relay::forceOff() {
     _state = false;
     _onSince = 0;
+    _offSince = millis();
     digitalWrite(_pin, _levelFor(false));
 }
 
 bool Relay::guard(unsigned long now, unsigned long lastAuthMs,
-                  unsigned long maxOnMs, unsigned long maxOfflineMs) {
+                  unsigned long maxOnMs, unsigned long maxOfflineMs,
+                  unsigned long minOffMs, bool overflowProtection, float currentPercent, float maxPercent) {
     if (!_state) {
         return false;
     }
@@ -61,8 +64,30 @@ bool Relay::guard(unsigned long now, unsigned long lastAuthMs,
         shouldOff = true;
     }
 
+    // Overflow protection: turn off pump if level exceeds max
+    if (overflowProtection && maxPercent > 0 && currentPercent >= maxPercent) {
+        Serial.println("[RELE] Overflow protection: nivel supera el máximo.");
+        shouldOff = true;
+    }
+
     if (shouldOff) {
         forceOff();
     }
     return shouldOff;
+}
+
+// Check if relay can be turned on (min off time protection)
+bool Relay::canTurnOn(unsigned long now) {
+    if (_state) return true;  // Already on
+    if (_minOffMs == 0) return true;  // Protection disabled
+    if (_offSince == 0) return true;  // Never been off
+    
+    unsigned long offDuration = now - _offSince;
+    if (offDuration < _minOffMs) {
+        Serial.print("[RELE] Min off time: esperando ");
+        Serial.print((_minOffMs - offDuration) / 1000);
+        Serial.println("s mas");
+        return false;
+    }
+    return true;
 }

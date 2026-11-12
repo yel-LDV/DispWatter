@@ -90,11 +90,19 @@ async def _login(websocket, data: dict) -> Optional[dict]:
     if not result.get("ok"):
         limiter.register_failure(ip)
         await asyncio.sleep(0.35)
-        await send_to_panel(
-            websocket,
-            {"event": "login_result", "ok": False, "error": "unauthorized",
-             "message": "Usuario o contraseña incorrectos"},
-        )
+        error = result.get("error", "unauthorized")
+        if error == "not_verified":
+            await send_to_panel(
+                websocket,
+                {"event": "login_result", "ok": False, "error": "not_verified",
+                 "message": "Cuenta no verificada. Revisa tu correo o solicita un nuevo email de verificación."},
+            )
+        else:
+            await send_to_panel(
+                websocket,
+                {"event": "login_result", "ok": False, "error": "unauthorized",
+                 "message": "Usuario o contraseña incorrectos"},
+            )
         await record_audit("LOGIN_FAILED", actor=username or "?", details=f"IP={ip}")
         return None
 
@@ -174,6 +182,12 @@ async def wait_for_panel_auth(websocket) -> Optional[dict]:
         event = str(data.get("event") or "")
         if event == "login":
             user = await _login(websocket, data)
+        elif event == "register":
+            await _handle_register(websocket, data)
+            continue
+        elif event == "verify_email":
+            await _handle_verify_email(websocket, data)
+            continue
         elif event == "resume":
             user = await _resume(websocket, data)
         else:
@@ -185,6 +199,215 @@ async def wait_for_panel_auth(websocket) -> Optional[dict]:
 
         if user:
             return user
+
+
+# ---------------------------------------------------------------------------
+# Registro y verificación de email
+# ---------------------------------------------------------------------------
+async def _handle_register(websocket, data: dict) -> None:
+    """Handle user registration (pre-auth)."""
+    from backend.services.auth_service import register_user
+
+    email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "")
+    
+    if not email or not password:
+        await send_to_panel(
+            websocket,
+            {"event": "register_result", "ok": False, "error": "invalid_params",
+             "message": "Correo y contraseña son obligatorios"},
+        )
+        return
+    
+    if len(password) < 6:
+        await send_to_panel(
+            websocket,
+            {"event": "register_result", "ok": False, "error": "invalid_params",
+             "message": "La contraseña debe tener al menos 6 caracteres"},
+        )
+        return
+    
+    success, message = await register_user(email, password)
+    await send_to_panel(
+        websocket,
+        {"event": "register_result", "ok": success, "message": message},
+    )
+
+
+async def _handle_verify_email(websocket, data: dict) -> None:
+    """Handle email verification (pre-auth)."""
+    from backend.services.auth_service import verify_email
+
+    token = str(data.get("token") or "").strip()
+    
+    if not token:
+        await send_to_panel(
+            websocket,
+            {"event": "verify_result", "ok": False, "error": "invalid_params",
+             "message": "Token de verificación requerido"},
+        )
+        return
+    
+    success, message = await verify_email(token)
+    await send_to_panel(
+        websocket,
+        {"event": "verify_result", "ok": success, "message": message},
+    )
+
+
+async def _handle_resend_verification(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Resend verification email for the current user."""
+    from backend.services.auth_service import send_verification_email
+
+    if user.get("is_verified", False):
+        await send_to_panel(
+            websocket,
+            {"event": "resend_result", "ok": True, "message": "Tu cuenta ya está verificada"},
+        )
+        return
+    
+    success, message = await send_verification_email(user["id"])
+    await send_to_panel(
+        websocket,
+        {"event": "resend_result", "ok": success, "message": message},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Permisos por dispositivo
+# ---------------------------------------------------------------------------
+async def _handle_get_permissions(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Get all permissions for a device."""
+    from backend.services import permission_service
+    
+    device_id = str(data.get("device_id") or "").strip()
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+    
+    perms = await permission_service.get_device_permissions(device_id)
+    await send_to_panel(
+        websocket,
+        {"event": "permissions_result", "request_id": request_id, "permissions": perms},
+    )
+
+
+async def _handle_grant_permission(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Grant a permission to a user on a device."""
+    from backend.services import permission_service
+    
+    device_id = str(data.get("device_id") or "").strip()
+    target_email = str(data.get("email") or "").strip().lower()
+    role = str(data.get("role") or "viewer").strip()
+    
+    if not device_id or not target_email:
+        await send_error(websocket, request_id, "invalid_params", "device_id y email son requeridos")
+        return
+    
+    # Find user by email
+    target_user = await db_service.get_user_by_email(target_email)
+    if target_user is None:
+        await send_error(websocket, request_id, "not_found", f"No existe usuario con correo {target_email}")
+        return
+    
+    success, message = await permission_service.grant_permission(
+        device_id=device_id,
+        user_id=target_user.id,
+        role=role,
+        granted_by=user["id"],
+    )
+    
+    if success:
+        await send_ack(websocket, request_id, True)
+        await _broadcast_sync()
+    else:
+        await send_error(websocket, request_id, "permission_error", message)
+
+
+async def _handle_revoke_permission(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Revoke a permission for a user on a device."""
+    from backend.services import permission_service
+    
+    device_id = str(data.get("device_id") or "").strip()
+    target_email = str(data.get("email") or "").strip().lower()
+    
+    if not device_id or not target_email:
+        await send_error(websocket, request_id, "invalid_params", "device_id y email son requeridos")
+        return
+    
+    target_user = await db_service.get_user_by_email(target_email)
+    if target_user is None:
+        await send_error(websocket, request_id, "not_found", f"No existe usuario con correo {target_email}")
+        return
+    
+    success, message = await permission_service.revoke_permission(
+        device_id=device_id,
+        user_id=target_user.id,
+    )
+    
+    if success:
+        await send_ack(websocket, request_id, True)
+        await _broadcast_sync()
+    else:
+        await send_error(websocket, request_id, "permission_error", message)
+
+
+# ---------------------------------------------------------------------------
+# Historial de telemetría
+# ---------------------------------------------------------------------------
+async def _handle_get_history(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Get telemetry history for a device."""
+    from backend.services.history_service import get_telemetry_history
+    
+    device_id = str(data.get("device_id") or "").strip()
+    period = str(data.get("period") or "24h").strip()
+    
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+    
+    result = await get_telemetry_history(device_id, period=period)
+    await send_to_panel(
+        websocket,
+        {"event": "history_result", "request_id": request_id, **result},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Configuración LCD
+# ---------------------------------------------------------------------------
+async def _handle_get_lcd_config(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Get LCD config for a device."""
+    from backend.services.lcd_service import get_lcd_config
+    
+    device_id = str(data.get("device_id") or "").strip()
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+    
+    config = await get_lcd_config(device_id)
+    await send_to_panel(
+        websocket,
+        {"event": "lcd_config_result", "request_id": request_id, "config": config},
+    )
+
+
+async def _handle_update_lcd_config(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Update LCD config for a device."""
+    from backend.services.lcd_service import update_lcd_config
+    
+    device_id = str(data.get("device_id") or "").strip()
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+    
+    config_data = data.get("config") or {}
+    success, message = await update_lcd_config(device_id, config_data)
+    
+    if success:
+        await send_ack(websocket, request_id, True)
+    else:
+        await send_error(websocket, request_id, "lcd_error", message)
 
 
 # ---------------------------------------------------------------------------
@@ -210,95 +433,53 @@ async def _broadcast_sync() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Claim
+# Claim con código de 6 dígitos
 # ---------------------------------------------------------------------------
-async def _handle_claim(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
-    if user.get("role") != "admin":
-        await send_error(websocket, request_id, "forbidden", "Solo un administrador puede vincular")
-        return
-
+async def _handle_start_claim(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Start claim: generate and send 6-digit code to device."""
+    from backend.services.claim_service import start_claim
+    
     device_id = str(data.get("device_id") or "").strip()
-    password = str(data.get("password") or "")
-    name = str(data.get("name") or "").strip()
-
-    if not device_id or len(password) < 16:
-        await send_error(
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+    
+    success, message = await start_claim(device_id, user["id"])
+    if success:
+        await send_to_panel(
             websocket,
-            request_id,
-            "invalid_params",
-            "device_id y contraseña de al menos 16 caracteres son obligatorios",
+            {"event": "claim_code_sent", "request_id": request_id, "message": message},
         )
-        return
+    else:
+        await send_error(websocket, request_id, "claim_error", message)
 
-    device_ws = server_state.device_socket_for_challenge(device_id)
-    if device_ws is None:
-        await send_error(
+
+async def _handle_verify_claim(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Verify the 6-digit claim code and link device to user."""
+    from backend.services.claim_service import verify_claim_code
+    
+    device_id = str(data.get("device_id") or "").strip()
+    code = str(data.get("code") or "").strip()
+    
+    if not device_id or not code:
+        await send_error(websocket, request_id, "invalid_params", "device_id y código son requeridos")
+        return
+    
+    success, message = await verify_claim_code(device_id, code, user["id"])
+    if success:
+        await send_to_panel(
             websocket,
-            request_id,
-            "device_offline",
-            "El dispositivo debe estar online para verificar el secreto",
+            {"event": "claim_verified", "request_id": request_id, "message": message, "device_id": device_id},
         )
-        return
+        await _broadcast_sync()
+    else:
+        await send_error(websocket, request_id, "claim_error", message)
 
-    # Reemplaza cualquier challenge pendiente y lo asocia al claim.
-    nonce = server_state.new_challenge(device_ws, "claim")
-    future = asyncio.get_running_loop().create_future()
-    server_state.claim_attempts[device_id] = {
-        "nonce": nonce,
-        "expected_hash": hash_credentials(device_id, password),
-        "future": future,
-        "panel_ws": websocket,
-        "user": user,
-        "expires": asyncio.get_running_loop().time() + 30,
-        "name": name,
-    }
 
-    sent = await server_state.send_to_device(
-        device_id,
-        {"event": "challenge", "nonce": nonce, "expires_in": 30, "purpose": "claim"},
-    )
-    if not sent:
-        server_state.claim_attempts.pop(device_id, None)
-        await send_error(websocket, request_id, "device_offline")
-        return
-
-    try:
-        result = await asyncio.wait_for(future, timeout=15.0)
-    except asyncio.TimeoutError:
-        server_state.claim_attempts.pop(device_id, None)
-        await send_error(websocket, request_id, "timeout", "El dispositivo no respondió a tiempo")
-        return
-
-    if not result.get("ok"):
-        await send_error(
-            websocket,
-            request_id,
-            result.get("error", "invalid_credentials"),
-            "El secreto no coincide con el dispositivo",
-        )
-        return
-
-    if name:
-        try:
-            await worker_pool.submit(
-                "panel",
-                "update_device_name",
-                device_id=device_id,
-                name=name[:128],
-            )
-        except Exception:
-            logger.exception("Error actualizando nombre del dispositivo")
-
-    await send_to_panel(
-        websocket,
-        {
-            "event": "claim_result",
-            "request_id": request_id,
-            "status": "success",
-            "device_id": device_id,
-        },
-    )
-    await _broadcast_sync()
+# Keep old _handle_claim for backward compatibility (admin-only HMAC claim)
+async def _handle_claim(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Legacy claim handler — delegates to new code-based flow."""
+    await _handle_start_claim(user, websocket, data, request_id)
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +819,10 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await send_to_panel(websocket, {"event": "pong"})
         elif event == "claim_device":
             await _handle_claim(user, websocket, data, request_id)
+        elif event == "start_claim":
+            await _handle_start_claim(user, websocket, data, request_id)
+        elif event == "verify_claim":
+            await _handle_verify_claim(user, websocket, data, request_id)
         elif event == "update_config":
             await _handle_update_config(user, websocket, data, request_id)
         elif event == "wifi_list":
@@ -668,6 +853,20 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_delete_device(user, websocket, data, request_id)
         elif event == "get_audit":
             await _handle_audit(websocket, data, request_id)
+        elif event == "resend_verification":
+            await _handle_resend_verification(user, websocket, data, request_id)
+        elif event == "get_permissions":
+            await _handle_get_permissions(user, websocket, data, request_id)
+        elif event == "grant_permission":
+            await _handle_grant_permission(user, websocket, data, request_id)
+        elif event == "revoke_permission":
+            await _handle_revoke_permission(user, websocket, data, request_id)
+        elif event == "get_history":
+            await _handle_get_history(user, websocket, data, request_id)
+        elif event == "get_lcd_config":
+            await _handle_get_lcd_config(user, websocket, data, request_id)
+        elif event == "update_lcd_config":
+            await _handle_update_lcd_config(user, websocket, data, request_id)
         elif event == "calibrate":
             await _handle_calibrate(user, websocket, data, request_id)
         elif command == "set_relay":

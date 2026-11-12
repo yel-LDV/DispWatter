@@ -3,6 +3,8 @@ import { initDevices, renderDashboard, renderDeviceSelect, updateDeviceStatus, u
 import { initWifi, renderWifi, refreshWifi } from "./wifi.js";
 import { initSystem } from "./system.js";
 import { initAudit, loadAudit, renderAudit } from "./audit.js";
+import { initTheme } from "./theme.js";
+import { initRegister } from "./register.js";
 import { state, selectedDevice } from "./state.js";
 import { backendEndpoint, socket, on } from "./ws.js";
 import { el, toast } from "./ui.js";
@@ -12,6 +14,9 @@ const VIEW_TITLES = {
   networks: "Redes WiFi",
   device: "Dispositivo",
   audit: "Auditoría",
+  history: "Historial",
+  lcd: "Configuración LCD",
+  permissions: "Permisos",
 };
 
 let currentView = "dashboard";
@@ -112,6 +117,8 @@ function bindDeviceChanges() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  initTheme();
+  initRegister();
   removeSystemView();
   el("backendEndpoint").textContent = backendEndpoint();
   initAuth(authenticated);
@@ -125,6 +132,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPasswordToggles();
   bindSocket();
   bindDeviceChanges();
+  bindRegisterToggle();
   showView("dashboard");
   socket.connect().catch(() => {
     setConnectionBadge(false, "Sin backend");
@@ -132,3 +140,25 @@ document.addEventListener("DOMContentLoaded", () => {
     socket.scheduleReconnect();
   });
 });
+
+function bindRegisterToggle() {
+  const showRegister = el("showRegister");
+  const showLogin = el("showLogin");
+  const loginScreen = el("loginScreen");
+  const registerScreen = el("registerScreen");
+  
+  if (showRegister) {
+    showRegister.addEventListener("click", (e) => {
+      e.preventDefault();
+      loginScreen?.classList.add("hidden");
+      registerScreen?.classList.remove("hidden");
+    });
+  }
+  if (showLogin) {
+    showLogin.addEventListener("click", (e) => {
+      e.preventDefault();
+      registerScreen?.classList.add("hidden");
+      loginScreen?.classList.remove("hidden");
+    });
+  }
+}

@@ -143,7 +143,7 @@ void setup() {
     // "relay.active_low" se reaplica más abajo (siempre dejando el relé OFF).
     relay.begin(PIN_RELE, RELE_ACTIVE_LOW_DEFAULT != 0);
     lcd.init();
-    lcd.onn();
+    lcd.light(true);
     lcd.clean();
     showLines("DispWatter", "Iniciando...");
 
@@ -197,7 +197,11 @@ void loop() {
     }
     relay.guard(now, comm.lastAuthenticatedMs(),
                 static_cast<unsigned long>(cfg.maxRelayOnMin) * 60000UL,
-                static_cast<unsigned long>(cfg.maxOfflineMin) * 60000UL);
+                static_cast<unsigned long>(cfg.maxOfflineMin) * 60000UL,
+                static_cast<unsigned long>(cfg.minRelayOffMin) * 60000UL,
+                cfg.overflowProtection,
+                lastPercent,
+                90.0f);
 
     if (now - lastSample >= cfg.sampleIntervalMs) {
         lastSample = now;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,9 @@ from backend.database.models import (
     AuditLog,
     Device,
     DeviceNetwork,
+    DevicePermission,
+    EmailVerification,
+    LcdConfig,
     TankConfig,
     Telemetry,
     User,
@@ -269,6 +273,8 @@ async def update_tank_config(
     min_level_percent: Optional[float] = None,
     max_level_percent: Optional[float] = None,
     auto_refill: Optional[bool] = None,
+    min_relay_off_min: Optional[float] = None,
+    overflow_protection: Optional[bool] = None,
 ) -> None:
     async with get_db() as session:
         cfg = await get_tank_config_in_session(session, device_id)
@@ -287,6 +293,10 @@ async def update_tank_config(
             cfg.max_level_percent = max_level_percent
         if auto_refill is not None:
             cfg.auto_refill = auto_refill
+        if min_relay_off_min is not None:
+            cfg.min_relay_off_min = min_relay_off_min
+        if overflow_protection is not None:
+            cfg.overflow_protection = overflow_protection
         await session.commit()
 
 
@@ -486,3 +496,258 @@ async def mark_all_devices_offline() -> None:
     async with get_db() as session:
         await session.execute(update(Device).values(is_online=False))
         await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# User extensions
+# ---------------------------------------------------------------------------
+
+async def get_user_by_email(email: str) -> Optional[User]:
+    async with get_db() as session:
+        result = await session.execute(select(User).where(User.email == email))
+        return result.scalar_one_or_none()
+
+
+async def create_user(
+    username: str, email: str, password_hash: str, role: str = "user"
+) -> User:
+    async with get_db() as session:
+        user = User(
+            id=f"USR-{secrets.token_hex(8)}",
+            username=username,
+            email=email,
+            password_hash=password_hash,
+            role=role,
+            is_active=True,
+            is_verified=False,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+async def verify_user(user_id: str) -> None:
+    async with get_db() as session:
+        await session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(is_verified=True)
+        )
+        await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# EmailVerification
+# ---------------------------------------------------------------------------
+
+async def create_email_verification(
+    email: str, user_id: str, token: str, expires_at: datetime
+) -> EmailVerification:
+    async with get_db() as session:
+        ev = EmailVerification(
+            email=email,
+            user_id=user_id,
+            token=token,
+            expires_at=expires_at,
+            used=False,
+        )
+        session.add(ev)
+        await session.commit()
+        await session.refresh(ev)
+        return ev
+
+
+async def get_email_verification(token: str) -> Optional[EmailVerification]:
+    async with get_db() as session:
+        result = await session.execute(
+            select(EmailVerification).where(EmailVerification.token == token)
+        )
+        return result.scalar_one_or_none()
+
+
+async def mark_email_verification_used(token: str) -> None:
+    async with get_db() as session:
+        await session.execute(
+            update(EmailVerification)
+            .where(EmailVerification.token == token)
+            .values(used=True)
+        )
+        await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# DevicePermission
+# ---------------------------------------------------------------------------
+
+async def get_device_permissions(device_id: str) -> List[DevicePermission]:
+    async with get_db() as session:
+        result = await session.execute(
+            select(DevicePermission).where(DevicePermission.device_id == device_id)
+        )
+        return result.scalars().all()
+
+
+async def get_device_permission(
+    device_id: str, user_id: str
+) -> Optional[DevicePermission]:
+    async with get_db() as session:
+        result = await session.execute(
+            select(DevicePermission).where(
+                DevicePermission.device_id == device_id,
+                DevicePermission.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+
+async def grant_permission(
+    device_id: str, user_id: str, role: str, granted_by: Optional[str] = None
+) -> DevicePermission:
+    async with get_db() as session:
+        existing = await session.execute(
+            select(DevicePermission).where(
+                DevicePermission.device_id == device_id,
+                DevicePermission.user_id == user_id,
+            )
+        )
+        perm = existing.scalar_one_or_none()
+        if perm:
+            perm.role = role
+            perm.granted_by = granted_by
+        else:
+            perm = DevicePermission(
+                device_id=device_id,
+                user_id=user_id,
+                role=role,
+                granted_by=granted_by,
+            )
+            session.add(perm)
+        await session.commit()
+        await session.refresh(perm)
+        return perm
+
+
+async def revoke_permission(device_id: str, user_id: str) -> None:
+    async with get_db() as session:
+        await session.execute(
+            delete(DevicePermission).where(
+                DevicePermission.device_id == device_id,
+                DevicePermission.user_id == user_id,
+            )
+        )
+        await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# LcdConfig
+# ---------------------------------------------------------------------------
+
+async def get_lcd_config(device_id: str) -> Optional[LcdConfig]:
+    async with get_db() as session:
+        result = await session.execute(
+            select(LcdConfig).where(LcdConfig.device_id == device_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def upsert_lcd_config(
+    device_id: str,
+    *,
+    line0_format: Optional[str] = None,
+    line1_format: Optional[str] = None,
+    scroll_speed: Optional[int] = None,
+    scroll_pause: Optional[int] = None,
+    distance_unit: Optional[str] = None,
+    custom_text0: Optional[str] = None,
+    custom_text1: Optional[str] = None,
+    show_scroll0: Optional[bool] = None,
+    show_scroll1: Optional[bool] = None,
+) -> LcdConfig:
+    async with get_db() as session:
+        cfg = await session.execute(
+            select(LcdConfig).where(LcdConfig.device_id == device_id)
+        )
+        cfg = cfg.scalar_one_or_none()
+        if cfg is None:
+            cfg = LcdConfig(device_id=device_id)
+            session.add(cfg)
+        if line0_format is not None:
+            cfg.line0_format = line0_format
+        if line1_format is not None:
+            cfg.line1_format = line1_format
+        if scroll_speed is not None:
+            cfg.scroll_speed = scroll_speed
+        if scroll_pause is not None:
+            cfg.scroll_pause = scroll_pause
+        if distance_unit is not None:
+            cfg.distance_unit = distance_unit
+        if custom_text0 is not None:
+            cfg.custom_text0 = custom_text0
+        if custom_text1 is not None:
+            cfg.custom_text1 = custom_text1
+        if show_scroll0 is not None:
+            cfg.show_scroll0 = show_scroll0
+        if show_scroll1 is not None:
+            cfg.show_scroll1 = show_scroll1
+        await session.commit()
+        await session.refresh(cfg)
+        return cfg
+
+
+# ---------------------------------------------------------------------------
+# Telemetry History
+# ---------------------------------------------------------------------------
+
+async def get_telemetry_history(
+    device_id: str,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    async with get_db() as session:
+        query = (
+            select(Telemetry)
+            .where(Telemetry.device_id == device_id)
+            .order_by(Telemetry.created_at.desc())
+        )
+        if start:
+            query = query.where(Telemetry.created_at >= start)
+        if end:
+            query = query.where(Telemetry.created_at <= end)
+        query = query.limit(limit)
+        result = await session.execute(query)
+        return [t.to_dict() for t in result.scalars().all()]
+
+
+async def get_telemetry_stats(
+    device_id: str, start: Optional[datetime] = None, end: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Return min, max, avg for water_percent and water_liters."""
+    from sqlalchemy import func as sa_func
+
+    async with get_db() as session:
+        query = select(
+            sa_func.avg(Telemetry.water_percent),
+            sa_func.min(Telemetry.water_percent),
+            sa_func.max(Telemetry.water_percent),
+            sa_func.avg(Telemetry.water_liters),
+            sa_func.min(Telemetry.water_liters),
+            sa_func.max(Telemetry.water_liters),
+            sa_func.count(Telemetry.id),
+        ).where(Telemetry.device_id == device_id)
+        if start:
+            query = query.where(Telemetry.created_at >= start)
+        if end:
+            query = query.where(Telemetry.created_at <= end)
+        row = await session.execute(query)
+        result = row.one()
+        return {
+            "avg_percent": round(result[0], 2) if result[0] else 0,
+            "min_percent": round(result[1], 2) if result[1] is not None else 0,
+            "max_percent": round(result[2], 2) if result[2] is not None else 0,
+            "avg_liters": round(result[3], 2) if result[3] else 0,
+            "min_liters": round(result[4], 2) if result[4] is not None else 0,
+            "max_liters": round(result[5], 2) if result[5] is not None else 0,
+            "count": result[6],
+        }

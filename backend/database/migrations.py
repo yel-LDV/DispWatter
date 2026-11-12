@@ -12,6 +12,16 @@ from backend.database.models import User
 
 logger = logging.getLogger("DispWatter.Migrations")
 
+USER_COLUMNS = {
+    "email": "TEXT NOT NULL DEFAULT ''",
+    "is_verified": "BOOLEAN NOT NULL DEFAULT 0",
+}
+
+TANK_CONFIG_COLUMNS = {
+    "min_relay_off_min": "FLOAT NOT NULL DEFAULT 3.0",
+    "overflow_protection": "BOOLEAN NOT NULL DEFAULT 1",
+}
+
 DEVICE_COLUMNS = {
     "last_seen": "DATETIME",
     "last_rssi": "INTEGER",
@@ -128,6 +138,7 @@ async def run_migrations() -> None:
             "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
 
+        # --- devices columns ---
         existing = await _columns(conn, "devices")
         for column, ddl in DEVICE_COLUMNS.items():
             if column not in existing:
@@ -135,6 +146,95 @@ async def run_migrations() -> None:
                     f"ALTER TABLE devices ADD COLUMN {column} {ddl}"
                 )
                 logger.info("Columna añadida: devices.%s", column)
+
+        # --- users columns ---
+        if await _meta_get(conn, "users_v2_migrated") != "1":
+            existing_users = await _columns(conn, "users")
+            for column, ddl in USER_COLUMNS.items():
+                if column not in existing_users:
+                    await conn.exec_driver_sql(
+                        f"ALTER TABLE users ADD COLUMN {column} {ddl}"
+                    )
+                    logger.info("Columna añadida: users.%s", column)
+            # Set default email for existing users based on username
+            await conn.exec_driver_sql(
+                "UPDATE users SET email = username || '@local' WHERE email = '' OR email IS NULL"
+            )
+            # Mark admin as verified by default
+            await conn.exec_driver_sql(
+                "UPDATE users SET is_verified = 1 WHERE role = 'admin'"
+            )
+            await _meta_set(conn, "users_v2_migrated", "1")
+            logger.info("Tabla users actualizada con email e is_verified")
+
+        # --- tank_configs columns ---
+        if await _meta_get(conn, "tank_config_v2_migrated") != "1":
+            existing_tank = await _columns(conn, "tank_configs")
+            for column, ddl in TANK_CONFIG_COLUMNS.items():
+                if column not in existing_tank:
+                    await conn.exec_driver_sql(
+                        f"ALTER TABLE tank_configs ADD COLUMN {column} {ddl}"
+                    )
+                    logger.info("Columna añadida: tank_configs.%s", column)
+            await _meta_set(conn, "tank_config_v2_migrated", "1")
+            logger.info("Tabla tank_configs actualizada con protecciones de bomba")
+
+        # --- New tables ---
+        # email_verifications
+        await conn.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS email_verifications ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "email TEXT NOT NULL,"
+            "user_id TEXT,"
+            "token TEXT UNIQUE NOT NULL,"
+            "expires_at DATETIME NOT NULL,"
+            "used BOOLEAN NOT NULL DEFAULT 0,"
+            "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
+        )
+        logger.info("Tabla email_verifications lista")
+
+        # device_permissions
+        await conn.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS device_permissions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "device_id TEXT NOT NULL,"
+            "user_id TEXT NOT NULL,"
+            "role TEXT NOT NULL DEFAULT 'viewer',"
+            "granted_by TEXT,"
+            "granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "UNIQUE(device_id, user_id),"
+            "FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,"
+            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,"
+            "FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL)"
+        )
+        logger.info("Tabla device_permissions lista")
+
+        # lcd_configs
+        await conn.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS lcd_configs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "device_id TEXT UNIQUE NOT NULL,"
+            "line0_format TEXT NOT NULL DEFAULT 'percent',"
+            "line1_format TEXT NOT NULL DEFAULT 'liters',"
+            "scroll_speed INTEGER NOT NULL DEFAULT 200,"
+            "scroll_pause INTEGER NOT NULL DEFAULT 3,"
+            "distance_unit TEXT NOT NULL DEFAULT 'cm',"
+            "custom_text0 TEXT,"
+            "custom_text1 TEXT,"
+            "show_scroll0 BOOLEAN NOT NULL DEFAULT 1,"
+            "show_scroll1 BOOLEAN NOT NULL DEFAULT 1,"
+            "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE)"
+        )
+        logger.info("Tabla lcd_configs lista")
+
+        # telemetry index for history queries
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS idx_telemetry_device_created "
+            "ON telemetry(device_id, created_at DESC)"
+        )
+        logger.info("Índice telemetry(device_id, created_at) listo")
 
         # La autenticación antigua guardaba un token provisional en key_hash.
         # Una única vez se invalida para exigir re-vinculación con challenge-response.

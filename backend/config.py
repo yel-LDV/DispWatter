@@ -90,6 +90,14 @@ class Settings:
     # tiempo (o hasta que el tanque llegue al nivel máximo) para no reencenderla.
     MANUAL_HOLD_MINUTES: int = int(os.getenv("MANUAL_HOLD_MINUTES", "30"))
 
+    # SMTP para verificación de email
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM: str = os.getenv("SMTP_FROM", "")
+    SMTP_USE_TLS: bool = _env_bool("SMTP_USE_TLS", True)
+
     # Rutas absolutas
     BASE_DIR: Path = BASE_DIR
     PROJECT_ROOT: Path = PROJECT_ROOT
