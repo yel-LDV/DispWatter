@@ -73,8 +73,11 @@ export function renderDashboard(fillForm = false) {
     setText("infoFirmware", "—");
     setText("infoWake", "—");
     setText("infoLocation", "—");
+    setText("infoWaterHeight", "—");
+    ["calibLive", "calibHeight", "calibPercent", "calibLiters"].forEach((id) => setText(id, "—"));
     const fill = el("tankFill");
     if (fill) fill.style.height = "0%";
+    renderControls(null);
     return;
   }
 
@@ -83,8 +86,15 @@ export function renderDashboard(fillForm = false) {
   setText("waterPercent", hasPercent ? percent.toFixed(0) : "—");
   setText("waterLiters", Number.isFinite(Number(dev.waterLiters)) ? Number(dev.waterLiters).toFixed(1) : "—");
   setText("currentDist", Number.isFinite(Number(dev.currentDist)) ? Number(dev.currentDist).toFixed(0) : "—");
-  setText("relayValue", dev.relayState ? "ON" : "OFF");
   setText("tankPercent", hasPercent ? `${percent.toFixed(0)}%` : "—%");
+
+  const heightMm = Number(dev.waterHeightMm);
+  const hasHeight = dev.waterHeightMm !== null && dev.waterHeightMm !== undefined && Number.isFinite(heightMm);
+  setText("infoWaterHeight", hasHeight ? `${heightMm.toFixed(0)} mm` : "—");
+  setText("calibLive", Number.isFinite(Number(dev.currentDist)) && dev.currentDist !== null ? Number(dev.currentDist).toFixed(1) : "—");
+  setText("calibHeight", hasHeight ? heightMm.toFixed(0) : "—");
+  setText("calibPercent", hasPercent ? percent.toFixed(0) : "—");
+  setText("calibLiters", Number.isFinite(Number(dev.waterLiters)) ? Number(dev.waterLiters).toFixed(1) : "—");
 
   const fill = el("tankFill");
   if (fill) {
@@ -107,14 +117,153 @@ export function renderDashboard(fillForm = false) {
   setText("infoWake", dev.wake_reason || "—");
   setText("infoLocation", dev.location || "—");
 
+  renderControls(dev);
   if (fillForm) fillTankForm(dev);
+}
+
+/* ---------------------------------------------------------------------------
+ * Interruptores de bomba y llenado automático
+ * ------------------------------------------------------------------------- */
+const controlBusy = { relay: false, auto: false };
+
+function renderControls(dev) {
+  const relaySwitch = el("relaySwitch");
+  const autoSwitch = el("autoSwitch");
+  if (!relaySwitch || !autoSwitch) return;
+
+  const usable = Boolean(dev && dev.claimed);
+  const online = Boolean(dev && dev.online);
+  const on = Boolean(dev && dev.relayState);
+
+  // La etiqueta y el interruptor siempre reflejan el estado real que informa el dispositivo.
+  setText("relayValue", dev ? (on ? "ENCENDIDA" : "APAGADA") : "—");
+  el("relayValue")?.classList.toggle("is-on", on);
+
+  if (!controlBusy.relay) relaySwitch.checked = on;
+  relaySwitch.disabled = !(usable && online) || controlBusy.relay;
+  setText(
+    "relaySwitchState",
+    !dev ? "—" : !usable ? "Dispositivo sin vincular" : !online ? "Dispositivo offline" : on ? "Encendida" : "Apagada",
+  );
+
+  const auto = Boolean(dev && dev.autoRefill);
+  if (!controlBusy.auto) autoSwitch.checked = auto;
+  autoSwitch.disabled = !usable || controlBusy.auto;
+  setText("autoSwitchState", !dev ? "—" : auto ? "Activado" : "Desactivado");
+
+  const hint = el("controlHint");
+  if (hint) {
+    if (!dev) {
+      hint.textContent = "";
+    } else if (auto && dev.autoPaused) {
+      hint.textContent = "Llenado automático en pausa porque apagaste la bomba a mano. Se reanuda al llegar al nivel máximo, tras unos minutos o al guardar la configuración.";
+    } else if (auto) {
+      hint.textContent = `Enciende la bomba por debajo de ${dev.minLevel}% y la apaga al llegar a ${dev.maxLevel}%.`;
+    } else {
+      hint.textContent = "Llenado automático desactivado: la bomba solo se enciende y se apaga con el interruptor.";
+    }
+  }
+}
+
+async function onRelaySwitchChange(event) {
+  const dev = selectedDevice();
+  const input = event.target;
+  const desired = input.checked;
+  if (!dev || !dev.claimed) {
+    input.checked = !desired;
+    return toast("El dispositivo debe vincularse primero", "warn");
+  }
+
+  controlBusy.relay = true;
+  input.disabled = true;
+  try {
+    const result = await socket.request({
+      command: "set_relay",
+      device_id: dev.id,
+      state: desired,
+    });
+    if (result.event === "ack" && result.ok) {
+      // Se muestra lo que el firmware dejó realmente aplicado, no lo que se pidió.
+      const actual = typeof result.relay_state === "boolean" ? result.relay_state : desired;
+      dev.relayState = actual;
+      if (actual !== desired) toast("El relé no quedó en el estado pedido", "warn");
+    } else {
+      handleRequestError(result, "No se pudo controlar la bomba");
+    }
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    controlBusy.relay = false;
+    renderControls(selectedDevice());
+  }
+}
+
+async function onAutoSwitchChange(event) {
+  const dev = selectedDevice();
+  const input = event.target;
+  const desired = input.checked;
+  if (!dev || !dev.claimed) {
+    input.checked = !desired;
+    return;
+  }
+
+  controlBusy.auto = true;
+  input.disabled = true;
+  try {
+    const result = await socket.request({
+      event: "update_config",
+      device_id: dev.id,
+      config: {
+        capacity: dev.capacity,
+        bottom_dist_mm: dev.bottomDist,
+        mirror_dist_mm: dev.mirrorDist,
+        min_level: dev.minLevel,
+        max_level: dev.maxLevel,
+        auto_refill: desired,
+      },
+    });
+    if (result.event === "ack" && result.ok) {
+      dev.autoRefill = desired;
+      dev.autoPaused = false;
+      toast(desired ? "Llenado automático activado" : "Llenado automático desactivado", "success");
+    } else {
+      handleRequestError(result, "No se pudo cambiar el llenado automático");
+    }
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    controlBusy.auto = false;
+    renderControls(selectedDevice());
+    if (selectedDevice()) el("cfgAutoRefill").checked = Boolean(selectedDevice().autoRefill);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Formulario de calibración y niveles
+ * ------------------------------------------------------------------------- */
+function round1(value) {
+  return Math.round(Number(value) * 10) / 10;
+}
+
+function syncMirrorField() {
+  const bottom = Number(el("cfgBottomDist").value);
+  const maxHeight = Number(el("cfgMaxHeight").value);
+  const mirror = el("cfgMirrorDist");
+  if (Number.isFinite(bottom) && Number.isFinite(maxHeight) && el("cfgBottomDist").value !== "" && el("cfgMaxHeight").value !== "") {
+    mirror.value = round1(bottom - maxHeight);
+  } else {
+    mirror.value = "";
+  }
 }
 
 export function fillTankForm(dev) {
   if (!dev) return;
+  const bottom = Number(dev.bottomDist ?? 900);
+  const mirror = Number(dev.mirrorDist ?? 100);
   el("cfgCapacity").value = dev.capacity ?? 50;
-  el("cfgBottomDist").value = dev.bottomDist ?? 900;
-  el("cfgMirrorDist").value = dev.mirrorDist ?? 100;
+  el("cfgBottomDist").value = round1(bottom);
+  el("cfgMaxHeight").value = round1(bottom - mirror);
+  el("cfgMirrorDist").value = round1(mirror);
   el("cfgMinLevel").value = dev.minLevel ?? 25;
   el("cfgMaxLevel").value = dev.maxLevel ?? 90;
   el("cfgAutoRefill").checked = Boolean(dev.autoRefill);
@@ -126,8 +275,29 @@ export function updateTelemetry(message) {
   dev.currentDist = message.distance_mm;
   dev.waterPercent = message.water_percent;
   dev.waterLiters = message.water_liters;
-  dev.relayState = message.relay_state;
+  if (message.water_height_mm !== undefined) dev.waterHeightMm = message.water_height_mm;
+  if (typeof message.relay_state === "boolean") dev.relayState = message.relay_state;
+  if (message.auto_paused !== undefined) dev.autoPaused = Boolean(message.auto_paused);
   if (message.device_id === state.selectedId) renderDashboard(false);
+}
+
+/** Cambio del relé informado por el backend (manual desde otro panel, automático o desconexión). */
+export function updateRelayState(message) {
+  const dev = state.devices.find((item) => item.id === message.device_id);
+  if (!dev || typeof message.relay_state !== "boolean") return;
+  const changed = dev.relayState !== message.relay_state;
+  dev.relayState = message.relay_state;
+  if (message.device_id === state.selectedId) {
+    renderDashboard(false);
+    if (changed && message.source === "auto") {
+      toast(
+        message.relay_state
+          ? "Bomba encendida automáticamente: nivel bajo"
+          : "Bomba apagada automáticamente: nivel máximo alcanzado",
+        "info",
+      );
+    }
+  }
 }
 
 export function updateDeviceStatus(message) {
@@ -143,36 +313,41 @@ export function updateDeviceStatus(message) {
   if (message.device_id === state.selectedId) renderDashboard(false);
 }
 
-async function relayCommand(stateValue) {
+async function calibrate(point) {
   const dev = selectedDevice();
   if (!dev) return toast("Selecciona un dispositivo", "warn");
   if (!dev.claimed) return toast("El dispositivo debe vincularse primero", "warn");
+  if (!dev.online) return toast("El dispositivo debe estar online para calibrar", "warn");
 
+  const isBottom = point === "bottom";
   const ok = await confirmAction(
-    stateValue ? "Encender bomba" : "Apagar bomba",
-    stateValue
-      ? "Se enviará la orden de encender el relé. El fail-safe lo apagará si se supera el tiempo máximo."
-      : "Se enviará la orden de apagar el relé.",
-    stateValue ? "Encender" : "Apagar",
-    !stateValue,
+    isBottom ? "Medir fondo" : "Medir máximo",
+    isBottom
+      ? "El tanque debe estar VACÍO. Se tomará la lectura actual del sensor como distancia al fondo."
+      : "El agua debe estar en su nivel MÁXIMO y en calma. Se tomará la lectura actual como distancia al espejo de agua al 100 %.",
+    "Medir",
+    false,
   );
   if (!ok) return;
 
+  const button = el(isBottom ? "btnCalibBottom" : "btnCalibMax");
+  if (button) button.disabled = true;
   try {
-    const result = await socket.request({
-      command: "set_relay",
-      device_id: dev.id,
-      state: stateValue,
-    });
-    if (result.event === "ack" && result.ok) {
-      toast(stateValue ? "Bomba encendida" : "Bomba apagada", "success");
-      dev.relayState = stateValue;
-      renderDashboard(false);
+    const result = await socket.request({ event: "calibrate", device_id: dev.id, point }, 20000);
+    if (result.event === "calibrate_result" && result.ok) {
+      toast(
+        isBottom
+          ? `Fondo calibrado: sensor a ${result.sensor_height_mm} mm del fondo`
+          : `Máximo calibrado: ${result.max_water_height_mm} mm de agua sobre el fondo`,
+        "success",
+      );
     } else {
-      handleRequestError(result, "No se pudo controlar el relé");
+      handleRequestError(result, "No se pudo calibrar");
     }
   } catch (error) {
     toast(error.message, "error");
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -256,13 +431,19 @@ async function saveTankConfig(event) {
   const dev = selectedDevice();
   if (!dev) return toast("Selecciona un dispositivo", "warn");
 
+  const bottom = Number(el("cfgBottomDist").value);
+  const maxHeight = Number(el("cfgMaxHeight").value);
+  if (!(maxHeight > 0) || !(maxHeight < bottom)) {
+    return toast("La altura máxima del agua debe ser mayor que 0 y menor que la altura del sensor", "warn");
+  }
+
   const payload = {
     event: "update_config",
     device_id: dev.id,
     config: {
       capacity: Number(el("cfgCapacity").value),
-      bottom_dist_mm: Number(el("cfgBottomDist").value),
-      mirror_dist_mm: Number(el("cfgMirrorDist").value),
+      bottom_dist_mm: bottom,
+      mirror_dist_mm: round1(bottom - maxHeight),
       min_level: Number(el("cfgMinLevel").value),
       max_level: Number(el("cfgMaxLevel").value),
       auto_refill: el("cfgAutoRefill").checked,
@@ -288,8 +469,12 @@ export function initDevices() {
     window.dispatchEvent(new CustomEvent("device-changed"));
   });
 
-  el("btnRelayOn")?.addEventListener("click", () => relayCommand(true));
-  el("btnRelayOff")?.addEventListener("click", () => relayCommand(false));
+  el("relaySwitch")?.addEventListener("change", onRelaySwitchChange);
+  el("autoSwitch")?.addEventListener("change", onAutoSwitchChange);
+  el("btnCalibBottom")?.addEventListener("click", () => calibrate("bottom"));
+  el("btnCalibMax")?.addEventListener("click", () => calibrate("max"));
+  el("cfgBottomDist")?.addEventListener("input", syncMirrorField);
+  el("cfgMaxHeight")?.addEventListener("input", syncMirrorField);
   el("btnOpenClaimModal")?.addEventListener("click", openClaimModal);
   el("tankConfigForm")?.addEventListener("submit", saveTankConfig);
 }

@@ -237,6 +237,41 @@ def _device_authorized(websocket, device_id: str) -> bool:
     return server_state.device_sockets.get(device_id) is websocket
 
 
+def compute_level(
+    distance_mm: float, bottom: float, mirror: float, capacity: float
+) -> tuple[float, float, float]:
+    """Convierte la distancia del sensor en (porcentaje, litros, altura del agua en mm).
+
+    Modelo (todas las medidas se toman desde el sensor hacia abajo):
+      - bottom : distancia sensor -> fondo del tanque (tanque vacío).
+      - mirror : distancia sensor -> espejo de agua con el tanque al máximo.
+      - altura útil      = bottom - mirror
+      - altura del agua  = bottom - distancia medida
+      - porcentaje       = altura del agua / altura útil
+      - litros           = capacidad * porcentaje   (tanque de sección constante)
+    """
+    usable_height = max(1.0, bottom - mirror)
+    water_height = max(0.0, bottom - distance_mm)
+    percent = max(0.0, min(100.0, (water_height / usable_height) * 100.0))
+    liters = round(capacity * percent / 100.0, 1)
+    return percent, liters, water_height
+
+
+async def _publish_relay_state(device_id: str, relay_state: bool, source: str) -> None:
+    """Actualiza la caché y avisa a todos los paneles del estado REAL del relé."""
+    cached = server_state.telemetry_cache.get(device_id)
+    if cached is not None:
+        cached["relay_state"] = relay_state
+    await server_state.broadcast_to_panels(
+        {
+            "event": "relay_state",
+            "device_id": device_id,
+            "relay_state": relay_state,
+            "source": source,
+        }
+    )
+
+
 async def _handle_telemetry(websocket, data: dict) -> None:
     device_id = str(data.get("device_id") or "")
     if not _device_authorized(websocket, device_id):
@@ -250,6 +285,7 @@ async def _handle_telemetry(websocket, data: dict) -> None:
         return
 
     relay_state = bool(data.get("relay_state", False))
+    server_state.record_reading(device_id, distance_mm)
 
     async with get_db() as session:
         result = await session.execute(select(TankConfig).where(TankConfig.device_id == device_id))
@@ -262,10 +298,7 @@ async def _handle_telemetry(websocket, data: dict) -> None:
         max_lvl = cfg.max_level_percent if cfg else 90.0
         auto_refill = cfg.auto_refill if cfg else True
 
-        usable_height = max(1.0, bottom - mirror)
-        water_height = bottom - distance_mm
-        percent = max(0.0, min(100.0, (water_height / usable_height) * 100.0))
-        liters = round(capacity * percent / 100.0, 1)
+        percent, liters, water_height = compute_level(distance_mm, bottom, mirror, capacity)
 
         session.add(
             Telemetry(
@@ -281,6 +314,7 @@ async def _handle_telemetry(websocket, data: dict) -> None:
         if device:
             device.last_seen = datetime.utcnow()
             device.is_online = True
+        device_claimed = bool(device and device.status == "CLAIMED")
 
         await session.commit()
 
@@ -296,39 +330,36 @@ async def _handle_telemetry(websocket, data: dict) -> None:
         "distance_mm": distance_mm,
         "percent": round(percent, 1),
         "liters": liters,
+        "height_mm": round(water_height, 1),
         "relay_state": relay_state,
         "updated_at": time.time(),
     }
 
-    if auto_refill and device.status == "CLAIMED":
-        if percent <= min_lvl and not relay_state:
+    # Valores para la pantalla LCD del dispositivo (la distancia la mide el propio ESP32).
+    if device_claimed:
+        await server_state.send_to_device(
+            device_id,
+            {"event": "level", "percent": round(percent, 1), "liters": liters},
+        )
+
+    # --- Llenado automático con histéresis (enciende en el mínimo, apaga en el máximo) ---
+    if percent >= max_lvl:
+        # Tanque lleno: se levanta la pausa manual.
+        server_state.clear_manual_hold(device_id)
+    if not auto_refill:
+        server_state.clear_manual_hold(device_id)
+
+    on_hold = server_state.is_on_hold(device_id)
+
+    if auto_refill and device_claimed:
+        if percent <= min_lvl and not relay_state and not on_hold:
             await server_state.send_to_device(
                 device_id, {"command": "set_relay", "state": True, "request_id": "auto-on"}
-            )
-            await server_state.send_to_device(
-                device_id,
-                {
-                    "command": "display",
-                    "line0": f"Nivel {percent:.0f}% {liters:.0f}L",
-                    "line1": "Llenando...",
-                    "clear": False,
-                    "request_id": "auto-on-lcd",
-                },
             )
             await record_audit("AUTO_REFILL_ON", device_id=device_id, details=f"Nivel {percent:.1f}% <= {min_lvl}%")
         elif percent >= max_lvl and relay_state:
             await server_state.send_to_device(
                 device_id, {"command": "set_relay", "state": False, "request_id": "auto-off"}
-            )
-            await server_state.send_to_device(
-                device_id,
-                {
-                    "command": "display",
-                    "line0": f"Nivel {percent:.0f}% {liters:.0f}L",
-                    "line1": "Tanque lleno",
-                    "clear": False,
-                    "request_id": "auto-off-lcd",
-                },
             )
             await record_audit("AUTO_REFILL_OFF", device_id=device_id, details=f"Nivel {percent:.1f}% >= {max_lvl}%")
 
@@ -339,7 +370,9 @@ async def _handle_telemetry(websocket, data: dict) -> None:
             "distance_mm": distance_mm,
             "water_percent": round(percent, 1),
             "water_liters": liters,
+            "water_height_mm": round(water_height, 1),
             "relay_state": relay_state,
+            "auto_paused": bool(auto_refill and on_hold),
         }
     )
 
@@ -412,6 +445,11 @@ async def _handle_command_result(websocket, data: dict) -> None:
 
     if request_id:
         server_state.resolve_request(request_id, data)
+
+    # El ack de set_relay incluye el estado REAL aplicado por el firmware.
+    if event == "ack" and device_id and isinstance(data.get("relay_state"), bool):
+        source = "auto" if request_id.startswith("auto-") else "manual"
+        await _publish_relay_state(device_id, data["relay_state"], source)
 
     if event == "wifi_list" and device_id:
         networks = data.get("networks")

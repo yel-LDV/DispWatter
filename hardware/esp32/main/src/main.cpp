@@ -26,6 +26,10 @@ unsigned long lastLcdRefresh = 0;
 unsigned long lastStatus = 0;
 unsigned long displayOverrideUntil = 0;
 float lastDistanceMm = -1.0f;
+float lastPercent = -1.0f;          // recibido del backend
+float lastLiters = -1.0f;
+unsigned long lastLevelMs = 0;      // instante de la última recepción
+const unsigned long LEVEL_STALE_MS = 15000UL;
 bool backendAuthenticated = false;
 bool configReady = false;
 
@@ -58,17 +62,37 @@ void refreshLcd() {
             showLines("Buscando servicio", cfg.deviceId);
         }
     } else {
-        String line1 = lastDistanceMm > 0.0f
-            ? String(lastDistanceMm / 10.0f, 1) + " cm "
-            : String("---- cm ");
-        line1 += relay.state() ? "RELE ON" : "RELE OFF";
-        showLines("Servidor OK", line1);
+        // Línea 1: porcentaje de agua y litros.  Línea 2: bomba ON/OFF y distancia.
+        const bool levelFresh = lastLevelMs != 0 && (millis() - lastLevelMs) < LEVEL_STALE_MS;
+        String line0 = levelFresh ? String(lastPercent, 0) + "%" : String("--%");
+        line0 += " ";
+        if (!levelFresh) {
+            line0 += "--- L";
+        } else if (lastLiters >= 1000.0f) {
+            line0 += String(lastLiters, 0) + " L";
+        } else {
+            line0 += String(lastLiters, 1) + " L";
+        }
+        String line1 = relay.state() ? "ON  " : "OFF ";
+        line1 += lastDistanceMm > 0.0f ? String(lastDistanceMm / 10.0f, 1) + " cm" : String("--- cm");
+        showLines(line0, line1);
     }
 }
 
-void onRelayCommand(bool state) {
+bool onRelayCommand(bool state) {
     relay.set(state);
-    Serial.printf("[RELE] Estado: %s\n", state ? "ENCENDIDO" : "APAGADO");
+    Serial.printf("[RELE] Estado: %s (nivel pin=%s, activo en %s)\n",
+                  relay.state() ? "ENCENDIDO" : "APAGADO",
+                  digitalRead(PIN_RELE) ? "HIGH" : "LOW",
+                  relay.activeLow() ? "LOW" : "HIGH");
+    lastLcdRefresh = 0;  // refresca la pantalla ya, sin esperar 250 ms
+    return relay.state();
+}
+
+void onLevel(float percent, float liters) {
+    lastPercent = percent;
+    lastLiters = liters;
+    lastLevelMs = millis();
 }
 
 void onDisplayCommand(const String& line0, const String& line1, bool clear) {
@@ -80,6 +104,7 @@ void onDisplayCommand(const String& line0, const String& line1, bool clear) {
 
 void onConnectionStatus(bool isConnected) {
     backendAuthenticated = isConnected;
+    if (!isConnected) lastLevelMs = 0;
     lastLcdRefresh = 0;
     if (!isConnected && relay.state()) {
         relay.forceOff();
@@ -114,7 +139,9 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.printf("[BOOT] reset_reason=%d\n", static_cast<int>(esp_reset_reason()));
-    relay.begin(PIN_RELE, RELE_ON == LOW);
+    // Apagado inmediato con la polaridad por defecto; si config.json define
+    // "relay.active_low" se reaplica más abajo (siempre dejando el relé OFF).
+    relay.begin(PIN_RELE, RELE_ACTIVE_LOW_DEFAULT != 0);
     lcd.init();
     lcd.onn();
     lcd.clean();
@@ -128,6 +155,11 @@ void setup() {
         return;
     }
 
+    if (configStore.get().relayActiveLow >= 0) {
+        relay.setPolarity(configStore.get().relayActiveLow == 1);
+    }
+    Serial.printf("[RELE] Polaridad: activo en %s\n", relay.activeLow() ? "LOW" : "HIGH");
+
     crypto.setKeyHash(configStore.get().keyHash);
     comm.setWakeReason(power.wakeReasonString());
     Serial.printf("[CONFIG] Dispositivo %s (%s)\n",
@@ -138,6 +170,7 @@ void setup() {
     net.begin();
     comm.onRelayCommand(onRelayCommand);
     comm.onDisplayCommand(onDisplayCommand);
+    comm.onLevel(onLevel);
     comm.onConnectionStatus(onConnectionStatus);
     comm.onReboot(onReboot);
     comm.onSleep(onSleep);

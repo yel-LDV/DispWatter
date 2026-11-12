@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+import statistics
 from datetime import datetime
 from typing import Optional
 
@@ -32,6 +33,16 @@ from backend.security.auth import (
 )
 
 logger = logging.getLogger("DispWatter.Panel")
+
+# Altura útil mínima del tanque (fondo - espejo máximo) y separación mínima
+# entre nivel mínimo y máximo. El HC-SR04 no lee bien por debajo de ~20 mm.
+MIN_USABLE_HEIGHT_MM = 20.0
+MIN_LEVEL_GAP = 5.0
+SENSOR_BLIND_ZONE_MM = 20.0
+
+# Calibración: muestras necesarias y dispersión máxima admitida (mm).
+CALIBRATION_MIN_SAMPLES = 3
+CALIBRATION_MAX_SPREAD_MM = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +224,17 @@ async def send_full_sync(websocket) -> None:
                     "minLevel": cfg.min_level_percent if cfg else 25.0,
                     "maxLevel": cfg.max_level_percent if cfg else 90.0,
                     "autoRefill": cfg.auto_refill if cfg else True,
+                    "maxWaterHeightMm": (
+                        (cfg.bottom_dist_mm - cfg.mirror_dist_mm) if cfg else 800.0
+                    ),
                     "currentDist": cached["distance_mm"] if cached else None,
                     "waterPercent": cached["percent"] if cached else None,
                     "waterLiters": cached["liters"] if cached else None,
+                    "waterHeightMm": cached.get("height_mm") if cached else None,
                     "relayState": cached["relay_state"] if cached else False,
+                    "autoPaused": bool(
+                        (cfg.auto_refill if cfg else True) and server_state.is_on_hold(dev.id)
+                    ),
                     "networks": [n.to_dict() for n in networks],
                 }
             )
@@ -357,8 +375,20 @@ async def _handle_update_config(user: dict, websocket, data: dict, request_id: O
     if not (0 <= mirror < bottom):
         await send_error(websocket, request_id, "invalid_params", "Distancia espejo inválida")
         return
+    if bottom - mirror < MIN_USABLE_HEIGHT_MM:
+        await send_error(
+            websocket, request_id, "invalid_params",
+            f"La altura útil (fondo - espejo máximo) debe ser de al menos {MIN_USABLE_HEIGHT_MM:.0f} mm",
+        )
+        return
     if not (0 <= min_level <= 100 and 0 <= max_level <= 100 and min_level < max_level):
         await send_error(websocket, request_id, "invalid_params", "Niveles inválidos")
+        return
+    if max_level - min_level < MIN_LEVEL_GAP:
+        await send_error(
+            websocket, request_id, "invalid_params",
+            f"Entre el mínimo y el máximo debe haber al menos {MIN_LEVEL_GAP:.0f} puntos para evitar encendidos continuos",
+        )
         return
 
     async with get_db() as session:
@@ -375,6 +405,9 @@ async def _handle_update_config(user: dict, websocket, data: dict, request_id: O
         cfg.max_level_percent = max_level
         cfg.auto_refill = auto_refill
         await session.commit()
+
+    # Cambiar la configuración (p. ej. reactivar el automático) levanta la pausa manual.
+    server_state.clear_manual_hold(device_id)
 
     await record_audit(
         "CONFIG_UPDATED",
@@ -404,14 +437,135 @@ async def _handle_relay(user: dict, websocket, data: dict, request_id: Optional[
         {"command": "set_relay", "state": state_value, "request_id": request_id},
     )
     ok = bool(result.get("ok", False))
+    actual = result.get("relay_state")
+    if not isinstance(actual, bool):
+        actual = state_value if ok else None
+
     if ok:
+        # Apagar a mano pausa el llenado automático; si no, el siguiente dato de
+        # telemetría (cada 2 s) volvería a encender la bomba bajo el mínimo.
+        if state_value:
+            server_state.clear_manual_hold(device_id)
+        else:
+            server_state.set_manual_hold(device_id, settings.MANUAL_HOLD_MINUTES)
         await record_audit(
             "MANUAL_RELAY",
             device_id=device_id,
             actor=user.get("username", "USER"),
-            details=f"state={state_value}",
+            details=f"state={state_value} actual={actual}",
         )
-    await send_ack(websocket, result.get("request_id", request_id), ok, result.get("error", ""))
+
+    payload = {
+        "event": "ack",
+        "request_id": result.get("request_id", request_id),
+        "ok": ok,
+        "relay_state": actual,
+    }
+    if not ok and result.get("error"):
+        payload["error"] = result["error"]
+    await send_to_panel(websocket, payload)
+
+
+# ---------------------------------------------------------------------------
+# Calibración del sensor
+# ---------------------------------------------------------------------------
+async def _handle_calibrate(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Fija el fondo o el máximo a partir de lecturas reales del sensor.
+
+    point = "bottom": tanque VACÍO -> distancia sensor-fondo (bottom_dist_mm)
+    point = "max"   : tanque en su nivel MÁXIMO -> distancia sensor-espejo (mirror_dist_mm)
+    """
+    device_id = str(data.get("device_id") or "")
+    point = str(data.get("point") or "")
+    if point not in {"bottom", "max"}:
+        await send_error(websocket, request_id, "invalid_params", "Punto de calibración desconocido")
+        return
+
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+    if not server_state.device_is_online(device_id):
+        await send_error(websocket, request_id, "device_offline", "El dispositivo debe estar online para calibrar")
+        return
+
+    readings = server_state.recent_distances(device_id, max_age=15.0)
+    if len(readings) < CALIBRATION_MIN_SAMPLES:
+        await send_error(
+            websocket, request_id, "invalid_params",
+            "Faltan lecturas recientes del sensor; espera unos segundos e inténtalo de nuevo",
+        )
+        return
+
+    spread = max(readings) - min(readings)
+    if spread > CALIBRATION_MAX_SPREAD_MM:
+        await send_error(
+            websocket, request_id, "invalid_params",
+            f"Lectura inestable (variación de {spread:.0f} mm). Espera a que el agua se calme y repite",
+        )
+        return
+
+    measured = float(statistics.median(readings))
+    if measured < SENSOR_BLIND_ZONE_MM:
+        await send_error(
+            websocket, request_id, "invalid_params",
+            f"El agua está dentro de la zona ciega del sensor (< {SENSOR_BLIND_ZONE_MM:.0f} mm)",
+        )
+        return
+
+    async with get_db() as session:
+        result = await session.execute(select(TankConfig).where(TankConfig.device_id == device_id))
+        cfg = result.scalar_one_or_none()
+        if cfg is None:
+            cfg = TankConfig(device_id=device_id)
+            session.add(cfg)
+            cfg.bottom_dist_mm = 900.0
+            cfg.mirror_dist_mm = 100.0
+
+        if point == "bottom":
+            if measured - cfg.mirror_dist_mm < MIN_USABLE_HEIGHT_MM:
+                await send_error(
+                    websocket, request_id, "invalid_params",
+                    "El fondo medido queda demasiado cerca del nivel máximo configurado; "
+                    "revisa que el tanque esté vacío o calibra primero el máximo",
+                )
+                return
+            cfg.bottom_dist_mm = round(measured, 1)
+        else:
+            if cfg.bottom_dist_mm - measured < MIN_USABLE_HEIGHT_MM:
+                await send_error(
+                    websocket, request_id, "invalid_params",
+                    "El máximo medido queda demasiado cerca del fondo configurado; "
+                    "revisa que el tanque esté lleno o calibra primero el fondo",
+                )
+                return
+            cfg.mirror_dist_mm = round(measured, 1)
+
+        sensor_height = cfg.bottom_dist_mm
+        max_height = cfg.bottom_dist_mm - cfg.mirror_dist_mm
+        await session.commit()
+
+    await record_audit(
+        "CALIBRATION",
+        device_id=device_id,
+        actor=user.get("username", "USER"),
+        details=f"point={point} measured={measured:.1f}mm samples={len(readings)} spread={spread:.1f}mm",
+    )
+    await send_to_panel(
+        websocket,
+        {
+            "event": "calibrate_result",
+            "request_id": request_id,
+            "ok": True,
+            "point": point,
+            "measured_mm": round(measured, 1),
+            "samples": len(readings),
+            "spread_mm": round(spread, 1),
+            "sensor_height_mm": round(sensor_height, 1),
+            "max_water_height_mm": round(max_height, 1),
+        },
+    )
+    await _broadcast_sync()
 
 
 async def _handle_display(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
@@ -531,6 +685,8 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_delete_device(user, websocket, data, request_id)
         elif event == "get_audit":
             await _handle_audit(websocket, data, request_id)
+        elif event == "calibrate":
+            await _handle_calibrate(user, websocket, data, request_id)
         elif command == "set_relay":
             await _handle_relay(user, websocket, data, request_id)
         elif command == "display":

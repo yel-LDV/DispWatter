@@ -10,7 +10,10 @@
 #include "Crypto.h"
 #include "NetManager.h"
 
-typedef std::function<void(bool state)> RelayCommandCallback;
+// Recibe el estado pedido y devuelve el estado lógico real del relé tras aplicarlo.
+typedef std::function<bool(bool state)> RelayCommandCallback;
+// Porcentaje y litros calculados por el backend (se reciben tras cada telemetría).
+typedef std::function<void(float percent, float liters)> LevelCallback;
 typedef std::function<void(const String& line0, const String& line1, bool clear)> DisplayCommandCallback;
 typedef std::function<void(bool isConnected)> ConnectionStatusCallback;
 typedef std::function<void()> RebootCallback;
@@ -26,8 +29,10 @@ public:
     void sendPing();
     void sendDeviceStatus();
     void ack(const String& requestId, bool ok, const String& error = "");
+    void ackRelay(const String& requestId, bool relayState);
     void onRelayCommand(RelayCommandCallback cb) { _relayCb = cb; }
     void onDisplayCommand(DisplayCommandCallback cb) { _displayCb = cb; }
+    void onLevel(LevelCallback cb) { _levelCb = cb; }
     void onConnectionStatus(ConnectionStatusCallback cb) { _connCb = cb; }
     void onReboot(RebootCallback cb) { _rebootCb = cb; }
     void onSleep(SleepCallback cb) { _sleepCb = cb; }
@@ -70,6 +75,7 @@ private:
     String _wakeReason = "power_on";
     RelayCommandCallback _relayCb;
     DisplayCommandCallback _displayCb;
+    LevelCallback _levelCb;
     ConnectionStatusCallback _connCb;
     RebootCallback _rebootCb;
     SleepCallback _sleepCb;

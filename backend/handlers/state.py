@@ -4,7 +4,8 @@ import asyncio
 import json
 import secrets
 import time
-from typing import Any, Dict, Optional, Set
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from backend.config import settings
 from backend.security.auth import LoginRateLimiter
@@ -24,6 +25,13 @@ class ServerState:
         self.panel_users: Dict[Any, dict] = {}
         # device_id -> última telemetría
         self.telemetry_cache: Dict[str, dict] = {}
+
+        # device_id -> últimas lecturas (monotonic, distance_mm); sirve para calibrar
+        self.recent_readings: Dict[str, Deque[Tuple[float, float]]] = {}
+
+        # device_id -> instante (monotonic) hasta el que el llenado automático
+        # queda en pausa tras un apagado manual de la bomba.
+        self.manual_hold: Dict[str, float] = {}
 
         # websocket de dispositivo -> challenge pendiente
         # {"nonce": str, "expires": float, "purpose": "auth"|"claim"}
@@ -113,6 +121,33 @@ class ServerState:
             return None
         self.challenges.pop(websocket, None)
         return challenge
+
+    # ------------------------------------------------------------------
+    # Lecturas recientes y pausa manual del llenado automático
+    # ------------------------------------------------------------------
+    def record_reading(self, device_id: str, distance_mm: float) -> None:
+        buf = self.recent_readings.setdefault(device_id, deque(maxlen=30))
+        buf.append((time.monotonic(), distance_mm))
+
+    def recent_distances(self, device_id: str, max_age: float = 15.0) -> List[float]:
+        cutoff = time.monotonic() - max_age
+        return [d for (t, d) in self.recent_readings.get(device_id, ()) if t >= cutoff]
+
+    def set_manual_hold(self, device_id: str, minutes: float) -> None:
+        if minutes > 0:
+            self.manual_hold[device_id] = time.monotonic() + minutes * 60.0
+
+    def clear_manual_hold(self, device_id: str) -> None:
+        self.manual_hold.pop(device_id, None)
+
+    def is_on_hold(self, device_id: str) -> bool:
+        until = self.manual_hold.get(device_id)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            self.manual_hold.pop(device_id, None)
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Paneles

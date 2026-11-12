@@ -1,5 +1,5 @@
 import { initAuth, tryResume } from "./auth.js";
-import { initDevices, renderDashboard, renderDeviceSelect, updateDeviceStatus, updateTelemetry } from "./devices.js";
+import { initDevices, renderDashboard, renderDeviceSelect, updateDeviceStatus, updateRelayState, updateTelemetry } from "./devices.js";
 import { initWifi, renderWifi, refreshWifi } from "./wifi.js";
 import { initSystem } from "./system.js";
 import { initAudit, loadAudit, renderAudit } from "./audit.js";
@@ -93,6 +93,7 @@ function bindSocket() {
   on("close", () => setConnectionBadge(false, "Reconectando…"));
   on("sync_all", handleSync);
   on("telemetry", updateTelemetry);
+  on("relay_state", updateRelayState);
   on("device_status", updateDeviceStatus);
   on("audit_result", (message) => {
     if (Array.isArray(message.entries)) renderAudit(message.entries);

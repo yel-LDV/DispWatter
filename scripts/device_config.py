@@ -36,6 +36,7 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_SAMPLING = {"interval_ms": 2000, "retry_ms": 5000}
 DEFAULT_POWER = {"wake_pin": 33, "wake_active_low": True, "sleep_timer_min": 60}
 DEFAULT_SAFETY = {"max_relay_on_min": 10, "max_offline_min": 5}
+DEFAULT_RELAY = {"active_low": False}
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,7 @@ def normalize(cfg: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("sampling", dict(DEFAULT_SAMPLING))
     cfg.setdefault("power", dict(DEFAULT_POWER))
     cfg.setdefault("safety", dict(DEFAULT_SAFETY))
+    cfg.setdefault("relay", dict(DEFAULT_RELAY))
     for key, default in DEFAULT_SAMPLING.items():
         cfg["sampling"].setdefault(key, default)
     for key, default in DEFAULT_POWER.items():
@@ -170,6 +172,10 @@ def validate(cfg: dict[str, Any], *, device_mode: bool = False) -> list[str]:
         errors.append("safety.max_relay_on_min debe ser >= 1")
     if not isinstance(safety.get("max_offline_min"), int) or safety["max_offline_min"] < 1:
         errors.append("safety.max_offline_min debe ser >= 1")
+
+    relay = cfg.get("relay") or {}
+    if not isinstance(relay.get("active_low"), bool):
+        errors.append("relay.active_low debe ser true (módulo activo en LOW) o false (activo en HIGH)")
 
     return errors
 
@@ -407,6 +413,7 @@ def cmd_configure(args: argparse.Namespace) -> int:
         "sampling": dict((existing or {}).get("sampling", DEFAULT_SAMPLING)),
         "power": dict((existing or {}).get("power", DEFAULT_POWER)),
         "safety": dict((existing or {}).get("safety", DEFAULT_SAFETY)),
+        "relay": dict((existing or {}).get("relay", DEFAULT_RELAY)),
     }
     config = normalize(config)
 

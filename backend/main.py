@@ -53,6 +53,16 @@ async def _handle_device_socket(websocket: WebSocketServerProtocol):
                     await session.commit()
             except Exception:
                 logger.exception("No se pudo marcar el dispositivo como offline")
+            # El firmware apaga el relé al perder la conexión: el panel no debe
+            # seguir mostrando la bomba encendida con datos viejos.
+            cached = server_state.telemetry_cache.get(device_id)
+            if cached:
+                cached["relay_state"] = False
+            server_state.clear_manual_hold(device_id)
+            server_state.recent_readings.pop(device_id, None)
+            await server_state.broadcast_to_panels(
+                {"event": "relay_state", "device_id": device_id, "relay_state": False, "source": "disconnect"}
+            )
             await record_audit("DEVICE_DISCONNECTED", device_id=device_id)
             logger.info("[DISPOSITIVO] %s desconectado", device_id)
             await server_state.broadcast_to_panels(

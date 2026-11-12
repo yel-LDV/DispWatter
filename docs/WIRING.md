@@ -16,7 +16,7 @@ credenciales ni datos de usuario.
 | --- | --- | --- | --- |
 | HC-SR04 `TRIG` | 5 | Salida | Pulso de disparo de 10 µs |
 | HC-SR04 `ECHO` | 18 | Entrada | **Requiere divisor de tensión a 3,3 V** |
-| Relé `IN` | 4 | Salida | Módulo activo en LOW (`RELE_ON = LOW`) |
+| Relé `IN` | 4 | Salida | Polaridad configurable (`RELE_ACTIVE_LOW_DEFAULT` / `relay.active_low`) |
 | LCD I2C `SDA` | 21 | I2C | Dirección por defecto `0x27` |
 | LCD I2C `SCL` | 22 | I2C | 5 V en la mayoría de módulos |
 | Botón de despertar | 33 | Entrada | `INPUT_PULLUP`, activo en LOW, `ext0` |
@@ -53,10 +53,23 @@ HC-SR04 ECHO ──[ R1 1 kΩ ]──┬── GPIO 18 (ESP32)
 
 ## 3. Relé / bomba
 
-El firmware asume un módulo de relé **activo en LOW**:
+La polaridad del módulo se define en **un solo sitio**:
 
-- `RELE_ON = LOW` → bobina activada.
-- `RELE_OFF = HIGH` → bobina desactivada.
+- `RELE_ACTIVE_LOW_DEFAULT` en `hardware/esp32/main/src/config.h` (valor por
+  defecto del firmware), o
+- `"relay": { "active_low": true|false }` en `config.json` (tiene prioridad).
+
+| Módulo | `active_low` | Pin para encender | Pin para apagar |
+| --- | --- | --- | --- |
+| Activo en HIGH | `false` | HIGH | LOW |
+| Activo en LOW | `true` | LOW | HIGH |
+
+> **Si el panel indica la bomba ENCENDIDA cuando está apagada (o al revés)**:
+> o bien la polaridad configurada no es la de tu módulo (cambia `active_low`),
+> o bien la bomba está en `COM`/`NC` en vez de `COM`/`NO`. Lo correcto es cablear
+> a `COM`/`NO` y ajustar `active_low` a tu módulo; **no** compenses un cableado
+> `NC` con el software, porque entonces la bomba funcionaría cada vez que el
+> ESP32 esté apagado, reiniciándose o en deep sleep.
 
 Conexionado típico:
 
@@ -66,21 +79,26 @@ ESP32 GND ───────────────── GND del módulo re
 5 V (fuente) ────────────── VCC del módulo relé
 ```
 
-### Pull-up obligatorio en la entrada del relé
+### Resistencia en la entrada del relé (según polaridad)
 
 Durante el arranque y el deep sleep, los GPIO del ESP32 quedan flotantes unos
-milisegundos. Un módulo activo en LOW puede activar la bomba en ese instante.
-Instala una resistencia externa de **10 kΩ entre `IN` y 3,3 V** para mantener el
-relé apagado mientras el GPIO no está configurado.
+milisegundos. La resistencia externa debe empujar la entrada hacia el nivel de
+**apagado**:
+
+- Módulo **activo en LOW**: pull-up de **10 kΩ** entre `IN` y 3,3 V.
+- Módulo **activo en HIGH**: pull-down de **10 kΩ** entre `IN` y GND.
+  *(Un pull-up en un módulo activo en HIGH encendería la bomba al arrancar y en
+  deep sleep.)*
 
 ```
-3,3 V ──[ 10 kΩ ]──┬── GPIO 4 ── IN del relé
-                    │
-                 (opcional) 100 nF a GND para ruido
+Activo en LOW :  3,3 V ──[ 10 kΩ ]──┬── GPIO 4 ── IN del relé
+Activo en HIGH:  GND   ──[ 10 kΩ ]──┘
 ```
 
-Comprueba con un polímetro que el relé permanece apagado al pulsar `RESET` y al
-entrar en deep sleep.
+El firmware escribe el nivel de apagado **antes** de configurar el pin como
+salida, para no emitir pulsos de encendido en el arranque. Comprueba con un
+polímetro que el relé permanece apagado al pulsar `RESET` y al entrar en deep
+sleep.
 
 ### Contactos de potencia
 
@@ -146,7 +164,8 @@ GPIO 33 ──┬── pulsador ── GND
 ## 7. Lista de comprobación antes de encender
 
 - [ ] Divisor de tensión instalado en `ECHO` (máximo 3,3 V en GPIO 18).
-- [ ] Pull-up de 10 kΩ en `IN` del relé.
+- [ ] Resistencia de 10 kΩ en `IN` hacia el nivel de apagado (pull-up si es activo en LOW, pull-down si es activo en HIGH).
+- [ ] `active_low` coincide con tu módulo y la bomba está en `COM`/`NO`.
 - [ ] GND común entre todos los módulos.
 - [ ] Relé apagado al resetear y al entrar en deep sleep.
 - [ ] Bomba conectada a `COM`/`NO` con fusible y flyback.

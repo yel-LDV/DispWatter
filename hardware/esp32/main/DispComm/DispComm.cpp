@@ -25,6 +25,12 @@ void DispComm::update() {
         return;
     }
     _ws.loop();
+    // Mientras haya sesión autenticada el backend está "vivo": se refresca la
+    // marca para que el fail-safe de max_offline_min mida tiempo SIN conexión
+    // y no tiempo desde la última autenticación.
+    if (isAuthenticated() && _wsConnected) {
+        _lastAuthMs = millis();
+    }
     if (_pendingDisconnect) {
         _pendingDisconnect = false;
         _ws.disconnect();
@@ -159,6 +165,12 @@ void DispComm::_handleJson(const char* json) {
         }
         return;
     }
+    if (event == "level") {
+        if (isAuthenticated() && _levelCb && doc.containsKey("percent") && doc.containsKey("liters")) {
+            _levelCb(doc["percent"] | 0.0f, doc["liters"] | 0.0f);
+        }
+        return;
+    }
     if (doc.containsKey("command")) {
         _handleCommand(doc);
         return;
@@ -175,8 +187,14 @@ void DispComm::_handleCommand(JsonDocument& doc) {
     }
     if (command == "set_relay") {
         const bool state = doc["state"] | false;
-        if (_relayCb) _relayCb(state);
-        ack(requestId, true);
+        if (!_relayCb) {
+            ack(requestId, false, "relay_unavailable");
+            return;
+        }
+        const bool actual = _relayCb(state);
+        // El ack lleva el estado REAL del relé para que el panel no dependa
+        // de lo que pidió, sino de lo que el firmware dejó aplicado.
+        ackRelay(requestId, actual);
         return;
     }
     if (command == "display") {
@@ -270,6 +288,15 @@ void DispComm::ack(const String& requestId, bool ok, const String& error) {
     doc["request_id"] = requestId;
     doc["ok"] = ok;
     if (!ok && error.length() > 0) doc["error"] = error;
+    _sendJson(doc);
+}
+
+void DispComm::ackRelay(const String& requestId, bool relayState) {
+    DynamicJsonDocument doc(256);
+    doc["event"] = "ack";
+    doc["request_id"] = requestId;
+    doc["ok"] = true;
+    doc["relay_state"] = relayState;
     _sendJson(doc);
 }
 

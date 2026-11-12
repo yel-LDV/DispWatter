@@ -238,6 +238,15 @@ Todos llevan `request_id` y se responden con `ack` (o `wifi_list`).
 { "command": "set_relay", "state": true, "request_id": "r1" }
 ```
 
+El `ack` incluye el estado lógico **real** del relé tras aplicarlo:
+
+```json
+{ "event": "ack", "request_id": "r1", "ok": true, "relay_state": true }
+```
+
+El backend reenvía ese estado a todos los paneles con el evento `relay_state`
+(ver §4.4) y lo guarda en la caché de telemetría.
+
 ### `display`
 
 ```json
@@ -415,6 +424,7 @@ Nunca incluye `key_hash` ni contraseñas WiFi.
 | `get_audit` | `action?`, `device_id?`, `request_id` | `audit_result` |
 | `set_relay` | `device_id`, `state`, `request_id` | `ack` |
 | `display` | `device_id`, `line0`, `line1`, `clear`, `request_id` | `ack` |
+| `calibrate` | `device_id`, `point` (`bottom`\|`max`), `request_id` | `calibrate_result` |
 | `sync` | — | `sync_all` |
 | `ping` | — | `pong` |
 
@@ -431,6 +441,38 @@ Nunca incluye `key_hash` ni contraseñas WiFi.
 }
 ```
 
+Modelo de nivel (distancias medidas desde el sensor hacia abajo):
+
+```
+altura útil     = bottom_dist_mm - mirror_dist_mm
+altura del agua = bottom_dist_mm - distance_mm
+porcentaje      = altura del agua / altura útil   (0..100)
+litros          = capacity * porcentaje
+```
+
+`bottom_dist_mm` es la altura del sensor sobre el fondo y la altura máxima del
+agua sobre el fondo es `bottom_dist_mm - mirror_dist_mm`.
+
+`calibrate` toma las lecturas de los últimos 15 s (mínimo 3, dispersión máxima
+15 mm) y guarda su mediana: `bottom` (tanque vacío) fija `bottom_dist_mm`;
+`max` (tanque al nivel máximo) fija `mirror_dist_mm`. Respuesta:
+
+```json
+{
+  "event": "calibrate_result", "request_id": "c1", "ok": true,
+  "point": "bottom", "measured_mm": 900.0, "samples": 5, "spread_mm": 3.0,
+  "sensor_height_mm": 900.0, "max_water_height_mm": 795.0
+}
+```
+
+Errores (`event: "error"`): `device_offline`, `invalid_params` (lecturas
+insuficientes o inestables, zona ciega < 20 mm, fondo/máximo incoherentes).
+
+Llenado automático: enciende la bomba cuando el nivel ≤ `min_level` y la apaga
+cuando ≥ `max_level`. Si la bomba se apaga a mano con el automático activo, este
+queda en pausa hasta llegar a `max_level`, `MANUAL_HOLD_MINUTES` (30 por
+defecto) o guardar la configuración.
+
 `device_action.action`: `reboot`, `sleep` (`minutes` 1..1440) o
 `factory_reset` (solo `admin`).
 
@@ -446,7 +488,10 @@ Restricciones:
 
 ### 4.4 Eventos del backend al panel
 
-- `telemetry`: distancia, porcentaje, litros y estado del relé.
+- `telemetry`: distancia, porcentaje, litros, `water_height_mm`, estado del relé y
+  `auto_paused` (llenado automático en pausa por un apagado manual).
+- `relay_state`: `{device_id, relay_state, source}` con `source` = `manual`,
+  `auto` o `disconnect` (el ESP32 se desconectó y el relé queda apagado).
 - `device_status`: online/offline, RSSI, IP, firmware, motivo de despertar.
 - `pong`.
 - `error`: `{event, request_id, code, message}`.
@@ -484,7 +529,7 @@ Restricciones:
 | `distance_mm` | 0..12 000 |
 | Capacidad | 0,1..100 000 L |
 | Distancia al fondo | 10..12 000 mm |
-| Distancia al espejo | 0 ≤ espejo < fondo |
-| Niveles | 0..100 %, mínimo < máximo |
+| Distancia al espejo | 0 ≤ espejo < fondo, con altura útil (fondo − espejo) ≥ 20 mm |
+| Niveles | 0..100 %, mínimo < máximo, con al menos 5 puntos de separación |
 | `minutes` de sleep | 1..1440 |
 | Timeout de comando | 10 s (20 s en claim) |

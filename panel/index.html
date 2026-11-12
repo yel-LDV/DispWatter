@@ -133,8 +133,8 @@
                             <div class="metric-value"><span id="currentDist">—</span><span class="metric-unit">mm</span></div>
                         </div>
                         <div class="metric">
-                            <div class="metric-label">Relé / bomba</div>
-                            <div class="metric-value magenta" id="relayValue">OFF</div>
+                            <div class="metric-label">Bomba</div>
+                            <div class="metric-value magenta" id="relayValue">—</div>
                         </div>
                     </div>
 
@@ -147,9 +147,28 @@
                                     <div class="tank-caption">Nivel</div>
                                 </div>
                             </div>
-                            <div class="btn-row" style="justify-content: center;">
-                                <button id="btnRelayOn" class="btn btn-ghost" type="button">Encender bomba</button>
-                                <button id="btnRelayOff" class="btn btn-danger" type="button">Apagar bomba</button>
+                            <div class="control-stack">
+                                <label class="switch-row" for="relaySwitch">
+                                    <span class="switch-text">
+                                        <span class="switch-title">Bomba</span>
+                                        <span class="switch-state" id="relaySwitchState">—</span>
+                                    </span>
+                                    <span class="switch">
+                                        <input id="relaySwitch" type="checkbox" role="switch" aria-label="Encender o apagar la bomba" disabled>
+                                        <span class="switch-track"><span class="switch-thumb"></span></span>
+                                    </span>
+                                </label>
+                                <label class="switch-row" for="autoSwitch">
+                                    <span class="switch-text">
+                                        <span class="switch-title">Llenado automático</span>
+                                        <span class="switch-state" id="autoSwitchState">—</span>
+                                    </span>
+                                    <span class="switch">
+                                        <input id="autoSwitch" type="checkbox" role="switch" aria-label="Activar o desactivar el llenado automático" disabled>
+                                        <span class="switch-track"><span class="switch-thumb"></span></span>
+                                    </span>
+                                </label>
+                                <p class="field-hint" id="controlHint"></p>
                             </div>
                         </div>
 
@@ -160,6 +179,7 @@
                             </div>
                             <div class="status-list">
                                 <div class="status-row"><span class="status-label">Estado</span><span class="status-value" id="infoOnline">—</span></div>
+                                <div class="status-row"><span class="status-label">Altura del agua</span><span class="status-value" id="infoWaterHeight">—</span></div>
                                 <div class="status-row"><span class="status-label">Señal WiFi</span><span class="status-value" id="infoRssi">—</span></div>
                                 <div class="status-row"><span class="status-label">Dirección IP</span><span class="status-value" id="infoIp">—</span></div>
                                 <div class="status-row"><span class="status-label">Uptime</span><span class="status-value" id="infoUptime">—</span></div>
@@ -230,31 +250,64 @@
                     </div>
 
                     <div class="card">
-                        <div class="card-head"><h2>Geometría y niveles</h2></div>
+                        <div class="card-head"><h2>Calibración y niveles</h2></div>
                         <form id="tankConfigForm" class="form-grid">
+                            <div class="calib-box" style="grid-column: 1 / -1;">
+                                <p class="field-hint">
+                                    Todas las medidas se toman desde el sensor hacia abajo.
+                                    Con el tanque <strong>vacío</strong> pulsa «Medir fondo» y con el agua en su
+                                    <strong>nivel máximo</strong> pulsa «Medir máximo». También puedes escribir los valores a mano.
+                                </p>
+                                <div class="calib-live">
+                                    <span>Lectura actual del sensor: <strong id="calibLive">—</strong> mm</span>
+                                    <span>Agua ahora: <strong id="calibHeight">—</strong> mm · <strong id="calibPercent">—</strong>% · <strong id="calibLiters">—</strong> L</span>
+                                </div>
+                                <div class="btn-row">
+                                    <button id="btnCalibBottom" class="btn btn-ghost" type="button">Medir fondo (tanque vacío)</button>
+                                    <button id="btnCalibMax" class="btn btn-ghost" type="button">Medir máximo (tanque lleno)</button>
+                                </div>
+                            </div>
                             <div class="field">
-                                <label for="cfgCapacity">Capacidad (L)</label>
+                                <label for="cfgBottomDist">Altura del sensor sobre el fondo (mm)</label>
+                                <input id="cfgBottomDist" name="bottom_dist_mm" type="number" step="0.1" min="10" required>
+                                <span class="field-hint">Distancia del sensor al fondo del tanque.</span>
+                            </div>
+                            <div class="field">
+                                <label for="cfgMaxHeight">Altura máxima del agua sobre el fondo (mm)</label>
+                                <input id="cfgMaxHeight" name="max_height_mm" type="number" step="0.1" min="1" required>
+                                <span class="field-hint">Espejo de agua al 100 % medido desde el fondo.</span>
+                            </div>
+                            <div class="field">
+                                <label for="cfgMirrorDist">Distancia sensor → espejo máximo (mm)</label>
+                                <input id="cfgMirrorDist" name="mirror_dist_mm" type="number" step="0.1" readonly tabindex="-1">
+                                <span class="field-hint">Se calcula: altura del sensor − altura máxima del agua.</span>
+                            </div>
+                            <div class="field">
+                                <label for="cfgCapacity">Capacidad total (L)</label>
                                 <input id="cfgCapacity" name="capacity" type="number" step="0.1" min="0.1" required>
-                            </div>
-                            <div class="field">
-                                <label for="cfgBottomDist">Distancia al fondo (mm)</label>
-                                <input id="cfgBottomDist" name="bottom_dist_mm" type="number" step="1" min="10" required>
-                            </div>
-                            <div class="field">
-                                <label for="cfgMirrorDist">Distancia al espejo (mm)</label>
-                                <input id="cfgMirrorDist" name="mirror_dist_mm" type="number" step="1" min="0" required>
+                                <span class="field-hint">Con el tanque al 100 %. Los litros se calculan proporcionalmente.</span>
                             </div>
                             <div class="field">
                                 <label for="cfgMinLevel">Nivel mínimo (%)</label>
                                 <input id="cfgMinLevel" name="min_level" type="number" step="1" min="0" max="100" required>
+                                <span class="field-hint">El llenado automático enciende la bomba por debajo de este nivel.</span>
                             </div>
                             <div class="field">
                                 <label for="cfgMaxLevel">Nivel máximo (%)</label>
                                 <input id="cfgMaxLevel" name="max_level" type="number" step="1" min="0" max="100" required>
+                                <span class="field-hint">Apaga la bomba al llegar aquí (mínimo 5 puntos sobre el mínimo).</span>
                             </div>
-                            <div class="check-row">
-                                <input id="cfgAutoRefill" name="auto_refill" type="checkbox">
-                                <label for="cfgAutoRefill">Llenado automático</label>
+                            <div class="field" style="grid-column: 1 / -1;">
+                                <label class="switch-row switch-inline" for="cfgAutoRefill">
+                                    <span class="switch-text">
+                                        <span class="switch-title">Llenado automático</span>
+                                        <span class="switch-state">Activa o desactiva el rellenado según los niveles mínimo y máximo.</span>
+                                    </span>
+                                    <span class="switch">
+                                        <input id="cfgAutoRefill" name="auto_refill" type="checkbox" role="switch">
+                                        <span class="switch-track"><span class="switch-thumb"></span></span>
+                                    </span>
+                                </label>
                             </div>
                             <div class="btn-row" style="grid-column: 1 / -1;">
                                 <button class="btn btn-primary" type="submit">Guardar configuración</button>

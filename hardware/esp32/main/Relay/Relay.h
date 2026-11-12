@@ -5,10 +5,21 @@
 
 /**
  * Relé con lógica activa-baja/alta y protecciones básicas.
+ *
+ * state() es el estado LÓGICO (true = bomba encendida), independiente de la
+ * polaridad del módulo. La polaridad solo decide qué nivel se escribe en el pin.
  */
 class Relay {
 public:
     void begin(uint8_t pin, bool activeLow);
+
+    /**
+     * Cambia la polaridad en caliente (p. ej. tras leer /config.json).
+     * Siempre deja el relé apagado con el nivel correcto de la nueva polaridad.
+     */
+    void setPolarity(bool activeLow);
+    bool activeLow() const { return _activeLow; }
+
     void set(bool on);
     bool state() const { return _state; }
     void forceOff();
@@ -23,6 +34,8 @@ public:
                unsigned long maxOnMs, unsigned long maxOfflineMs);
 
 private:
+    uint8_t _levelFor(bool on) const;
+
     uint8_t _pin = 0;
     bool _activeLow = true;
     bool _state = false;

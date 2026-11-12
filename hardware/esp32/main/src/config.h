@@ -16,9 +16,13 @@
 #define LCD_I2C_ADDR       0x27
 #define WAKE_PIN           33
 
-// Relé (módulo activo en LOW)
-#define RELE_ON            LOW
-#define RELE_OFF           HIGH
+// Relé: polaridad por defecto de la lógica del módulo.
+//   1 = módulo activo en LOW  (IN a GND  -> bobina activada)
+//   0 = módulo activo en HIGH (IN a 3,3V -> bobina activada)
+// Se puede sobrescribir sin recompilar con "relay.active_low" en config.json.
+// Si el panel muestra la bomba ENCENDIDA cuando está apagada (o al revés),
+// cambia este valor (o el JSON) y revisa docs/WIRING.md (pull-up / pull-down).
+#define RELE_ACTIVE_LOW_DEFAULT  0
 
 // Límites
 #define MAX_WIFI_NETWORKS  8

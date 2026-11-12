@@ -86,6 +86,10 @@ class Settings:
     # Retención de telemetría
     TELEMETRY_RETENTION_HOURS: int = int(os.getenv("TELEMETRY_RETENTION_HOURS", "24"))
 
+    # Tras apagar la bomba a mano, el llenado automático queda en pausa este
+    # tiempo (o hasta que el tanque llegue al nivel máximo) para no reencenderla.
+    MANUAL_HOLD_MINUTES: int = int(os.getenv("MANUAL_HOLD_MINUTES", "30"))
+
     # Rutas absolutas
     BASE_DIR: Path = BASE_DIR
     PROJECT_ROOT: Path = PROJECT_ROOT

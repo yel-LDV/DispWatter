@@ -112,6 +112,11 @@ bool ConfigStore::save() {
     safety["max_relay_on_min"] = _cfg.maxRelayOnMin;
     safety["max_offline_min"] = _cfg.maxOfflineMin;
 
+    if (_cfg.relayActiveLow >= 0) {
+        JsonObject relayCfg = doc.createNestedObject("relay");
+        relayCfg["active_low"] = (_cfg.relayActiveLow == 1);
+    }
+
     File file = LittleFS.open(CONFIG_TMP, "w");
     if (!file) {
         _lastError = "No se pudo abrir config temporal";
@@ -189,6 +194,13 @@ bool ConfigStore::_applyJson(JsonVariantConst root, DeviceConfig& out) {
     JsonObjectConst safety = root["safety"];
     out.maxRelayOnMin = safety["max_relay_on_min"] | 10;
     out.maxOfflineMin = safety["max_offline_min"] | 5;
+
+    JsonObjectConst relayCfg = root["relay"];
+    if (!relayCfg.isNull() && relayCfg.containsKey("active_low")) {
+        out.relayActiveLow = (relayCfg["active_low"] | true) ? 1 : 0;
+    } else {
+        out.relayActiveLow = -1;
+    }
 
     return true;
 }
