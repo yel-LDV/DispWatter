@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import select
-
-from backend.database.connect import get_db
-from backend.database.models import Device
+from backend.services import db_service
 
 
 async def authorize_device(
@@ -15,9 +12,7 @@ async def authorize_device(
     if not device_id:
         return None, "invalid_params"
 
-    async with get_db() as session:
-        result = await session.execute(select(Device).where(Device.id == device_id))
-        device = result.scalar_one_or_none()
+    device = await db_service.get_device(device_id)
 
     if device is None:
         return None, "not_found"

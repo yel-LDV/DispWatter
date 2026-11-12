@@ -30,9 +30,17 @@ hardware/esp32/main/data/config.json
 !hardware/esp32/main/device_config.example.json
 !hardware/esp32/main/data/config.example.json
 
-# Hardware (PlatformIO / Arduino / VSCode)
+# Hardware (PlatformIO / Arduino / VSCode / Editors)
 .pio/
 .clangd/
+.clangd
+.gen-clangd.json
+gen-clangd.py
+.idea/
+.vscode/
+build/
 hardware/esp32/main/build/
 hardware/esp32/main/.vscode/
 hardware/esp32/main/.pio/
+hardware/esp32/src
+backend/security/doc

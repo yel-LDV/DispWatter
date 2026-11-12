@@ -8,11 +8,11 @@ import statistics
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from backend.config import settings
 from backend.database.connect import get_db
-from backend.database.models import AuditLog, Device, DeviceNetwork, TankConfig, User
+from backend.database.models import Device, TankConfig
 from backend.handlers.access import authorize_device
 from backend.handlers.device_action import handle_device_action
 from backend.handlers.device_command import request_device, send_ack, send_error, send_to_panel
@@ -31,6 +31,8 @@ from backend.security.auth import (
     record_audit,
     verify_password,
 )
+from backend.services import db_service
+from backend.workers.thread_pool import worker_pool
 
 logger = logging.getLogger("DispWatter.Panel")
 
@@ -78,25 +80,25 @@ async def _login(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    async with get_db() as session:
-        result = await session.execute(select(User).where(User.username == username))
-        user = result.scalar_one_or_none()
+    # Usar worker para login
+    try:
+        result = await worker_pool.submit("panel", "login", username=username, password=password)
+    except Exception:
+        logger.exception("Error en login worker")
+        result = {"ok": False, "error": "internal_error"}
 
-        if user is None or not user.is_active or not verify_password(user.password_hash, password):
-            limiter.register_failure(ip)
-            await asyncio.sleep(0.35)
-            await send_to_panel(
-                websocket,
-                {"event": "login_result", "ok": False, "error": "unauthorized",
-                 "message": "Usuario o contraseña incorrectos"},
-            )
-            await record_audit("LOGIN_FAILED", actor=username or "?", details=f"IP={ip}")
-            return None
+    if not result.get("ok"):
+        limiter.register_failure(ip)
+        await asyncio.sleep(0.35)
+        await send_to_panel(
+            websocket,
+            {"event": "login_result", "ok": False, "error": "unauthorized",
+             "message": "Usuario o contraseña incorrectos"},
+        )
+        await record_audit("LOGIN_FAILED", actor=username or "?", details=f"IP={ip}")
+        return None
 
-        user.last_login = datetime.utcnow()
-        await session.commit()
-        user_info = {"id": user.id, "username": user.username, "role": user.role}
-
+    user_info = result["user"]
     limiter.reset(ip)
     token = create_token(user_info["id"], user_info["role"])
     await send_to_panel(
@@ -116,17 +118,21 @@ async def _resume(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    async with get_db() as session:
-        result = await session.execute(select(User).where(User.id == payload["sub"]))
-        user = result.scalar_one_or_none()
-        if user is None or not user.is_active:
-            await send_to_panel(
-                websocket,
-                {"event": "resume_result", "ok": False, "error": "unauthorized"},
-            )
-            return None
-        user_info = {"id": user.id, "username": user.username, "role": user.role}
+    # Usar worker para resume
+    try:
+        result = await worker_pool.submit("panel", "resume", user_id=payload["sub"])
+    except Exception:
+        logger.exception("Error en resume worker")
+        result = {"ok": False, "error": "internal_error"}
 
+    if not result.get("ok"):
+        await send_to_panel(
+            websocket,
+            {"event": "resume_result", "ok": False, "error": "unauthorized"},
+        )
+        return None
+
+    user_info = result["user"]
     await send_to_panel(
         websocket,
         {"event": "resume_result", "ok": True, "user": user_info},
@@ -185,59 +191,12 @@ async def wait_for_panel_auth(websocket) -> Optional[dict]:
 # Sincronización
 # ---------------------------------------------------------------------------
 async def send_full_sync(websocket) -> None:
-    async with get_db() as session:
-        result = await session.execute(select(Device).order_by(Device.created_at))
-        devices = result.scalars().all()
-
+    try:
+        result = await worker_pool.submit("panel", "get_all_devices")
+        device_list = result.get("devices", [])
+    except Exception:
+        logger.exception("Error en sync worker")
         device_list = []
-        for dev in devices:
-            cfg_res = await session.execute(
-                select(TankConfig).where(TankConfig.device_id == dev.id)
-            )
-            cfg = cfg_res.scalar_one_or_none()
-
-            net_res = await session.execute(
-                select(DeviceNetwork)
-                .where(DeviceNetwork.device_id == dev.id)
-                .order_by(DeviceNetwork.priority)
-            )
-            networks = net_res.scalars().all()
-
-            cached = server_state.telemetry_cache.get(dev.id)
-            device_list.append(
-                {
-                    "id": dev.id,
-                    "name": dev.name,
-                    "location": dev.location,
-                    "firmware_version": dev.firmware_version,
-                    "claimed": dev.status == "CLAIMED",
-                    "status": dev.status,
-                    "owner_id": dev.owner_id,
-                    "online": dev.id in server_state.device_sockets,
-                    "last_seen": dev.last_seen.isoformat() if dev.last_seen else None,
-                    "rssi": dev.last_rssi,
-                    "ip": dev.last_ip,
-                    "wake_reason": dev.wake_reason,
-                    "capacity": cfg.capacity_liters if cfg else 50.0,
-                    "bottomDist": cfg.bottom_dist_mm if cfg else 900.0,
-                    "mirrorDist": cfg.mirror_dist_mm if cfg else 100.0,
-                    "minLevel": cfg.min_level_percent if cfg else 25.0,
-                    "maxLevel": cfg.max_level_percent if cfg else 90.0,
-                    "autoRefill": cfg.auto_refill if cfg else True,
-                    "maxWaterHeightMm": (
-                        (cfg.bottom_dist_mm - cfg.mirror_dist_mm) if cfg else 800.0
-                    ),
-                    "currentDist": cached["distance_mm"] if cached else None,
-                    "waterPercent": cached["percent"] if cached else None,
-                    "waterLiters": cached["liters"] if cached else None,
-                    "waterHeightMm": cached.get("height_mm") if cached else None,
-                    "relayState": cached["relay_state"] if cached else False,
-                    "autoPaused": bool(
-                        (cfg.auto_refill if cfg else True) and server_state.is_on_hold(dev.id)
-                    ),
-                    "networks": [n.to_dict() for n in networks],
-                }
-            )
 
     await send_to_panel(websocket, {"event": "sync_all", "devices": device_list})
 
@@ -320,13 +279,15 @@ async def _handle_claim(user: dict, websocket, data: dict, request_id: Optional[
         return
 
     if name:
-        async with get_db() as session:
-            dev = (
-                await session.execute(select(Device).where(Device.id == device_id))
-            ).scalar_one_or_none()
-            if dev:
-                dev.name = name[:128]
-                await session.commit()
+        try:
+            await worker_pool.submit(
+                "panel",
+                "update_device_name",
+                device_id=device_id,
+                name=name[:128],
+            )
+        except Exception:
+            logger.exception("Error actualizando nombre del dispositivo")
 
     await send_to_panel(
         websocket,
@@ -391,20 +352,23 @@ async def _handle_update_config(user: dict, websocket, data: dict, request_id: O
         )
         return
 
-    async with get_db() as session:
-        result = await session.execute(select(TankConfig).where(TankConfig.device_id == device_id))
-        cfg = result.scalar_one_or_none()
-        if cfg is None:
-            cfg = TankConfig(device_id=device_id)
-            session.add(cfg)
-
-        cfg.capacity_liters = capacity
-        cfg.bottom_dist_mm = bottom
-        cfg.mirror_dist_mm = mirror
-        cfg.min_level_percent = min_level
-        cfg.max_level_percent = max_level
-        cfg.auto_refill = auto_refill
-        await session.commit()
+    # Usar worker para actualizar config
+    try:
+        await worker_pool.submit(
+            "panel",
+            "update_tank_config",
+            device_id=device_id,
+            capacity_liters=capacity,
+            bottom_dist_mm=bottom,
+            mirror_dist_mm=mirror,
+            min_level_percent=min_level,
+            max_level_percent=max_level,
+            auto_refill=auto_refill,
+        )
+    except Exception:
+        logger.exception("Error actualizando config")
+        await send_error(websocket, request_id, "hardware_error", "Error interno")
+        return
 
     # Cambiar la configuración (p. ej. reactivar el automático) levanta la pausa manual.
     server_state.clear_manual_hold(device_id)
@@ -513,37 +477,50 @@ async def _handle_calibrate(user: dict, websocket, data: dict, request_id: Optio
         )
         return
 
-    async with get_db() as session:
-        result = await session.execute(select(TankConfig).where(TankConfig.device_id == device_id))
-        cfg = result.scalar_one_or_none()
-        if cfg is None:
-            cfg = TankConfig(device_id=device_id)
-            session.add(cfg)
-            cfg.bottom_dist_mm = 900.0
-            cfg.mirror_dist_mm = 100.0
+    # Obtener config actual para validaciones
+    cfg_result = await db_service.get_tank_config(device_id)
+    if cfg_result is None:
+        cfg_result = TankConfig(device_id=device_id)
+        cfg_result.bottom_dist_mm = 900.0
+        cfg_result.mirror_dist_mm = 100.0
 
-        if point == "bottom":
-            if measured - cfg.mirror_dist_mm < MIN_USABLE_HEIGHT_MM:
-                await send_error(
-                    websocket, request_id, "invalid_params",
-                    "El fondo medido queda demasiado cerca del nivel máximo configurado; "
-                    "revisa que el tanque esté vacío o calibra primero el máximo",
-                )
-                return
-            cfg.bottom_dist_mm = round(measured, 1)
-        else:
-            if cfg.bottom_dist_mm - measured < MIN_USABLE_HEIGHT_MM:
-                await send_error(
-                    websocket, request_id, "invalid_params",
-                    "El máximo medido queda demasiado cerca del fondo configurado; "
-                    "revisa que el tanque esté lleno o calibra primero el fondo",
-                )
-                return
-            cfg.mirror_dist_mm = round(measured, 1)
+    if point == "bottom":
+        if measured - cfg_result.mirror_dist_mm < MIN_USABLE_HEIGHT_MM:
+            await send_error(
+                websocket, request_id, "invalid_params",
+                "El fondo medido queda demasiado cerca del nivel máximo configurado; "
+                "revisa que el tanque esté vacío o calibra primero el máximo",
+            )
+            return
+        bottom_dist_mm = round(measured, 1)
+        mirror_dist_mm = cfg_result.mirror_dist_mm
+    else:
+        if cfg_result.bottom_dist_mm - measured < MIN_USABLE_HEIGHT_MM:
+            await send_error(
+                websocket, request_id, "invalid_params",
+                "El máximo medido queda demasiado cerca del fondo configurado; "
+                "revisa que el tanque esté lleno o calibra primero el fondo",
+            )
+            return
+        bottom_dist_mm = cfg_result.bottom_dist_mm
+        mirror_dist_mm = round(measured, 1)
 
-        sensor_height = cfg.bottom_dist_mm
-        max_height = cfg.bottom_dist_mm - cfg.mirror_dist_mm
-        await session.commit()
+    # Guardar en BD vía worker
+    try:
+        await worker_pool.submit(
+            "panel",
+            "update_tank_config",
+            device_id=device_id,
+            bottom_dist_mm=bottom_dist_mm,
+            mirror_dist_mm=mirror_dist_mm,
+        )
+    except Exception:
+        logger.exception("Error guardando calibración")
+        await send_error(websocket, request_id, "hardware_error", "Error interno")
+        return
+
+    sensor_height = bottom_dist_mm
+    max_height = bottom_dist_mm - mirror_dist_mm
 
     await record_audit(
         "CALIBRATION",
@@ -600,9 +577,12 @@ async def _handle_delete_device(user: dict, websocket, data: dict, request_id: O
         await send_error(websocket, request_id, "forbidden")
         return
     device_id = str(data.get("device_id") or "")
-    async with get_db() as session:
-        await session.execute(delete(Device).where(Device.id == device_id))
-        await session.commit()
+    try:
+        await worker_pool.submit("panel", "delete_device", device_id=device_id)
+    except Exception:
+        logger.exception("Error eliminando dispositivo")
+        await send_error(websocket, request_id, "hardware_error", "Error interno")
+        return
     server_state.unregister_device(device_id)
     await record_audit("DEVICE_DELETED", device_id=device_id, actor=user.get("username", "USER"))
     await send_ack(websocket, request_id, True)
@@ -613,14 +593,17 @@ async def _handle_audit(websocket, data: dict, request_id: Optional[str]) -> Non
     action_filter = str(data.get("action") or "").strip()
     device_filter = str(data.get("device_id") or "").strip()
 
-    async with get_db() as session:
-        query = select(AuditLog).order_by(AuditLog.id.desc()).limit(250)
-        if action_filter:
-            query = query.where(AuditLog.action.like(f"{action_filter}%"))
-        if device_filter:
-            query = query.where(AuditLog.device_id == device_filter)
-        result = await session.execute(query)
-        logs = [entry.to_dict() for entry in result.scalars().all()]
+    try:
+        result = await worker_pool.submit(
+            "panel",
+            "get_audit_logs",
+            action_filter=action_filter,
+            device_filter=device_filter,
+        )
+        logs = result.get("entries", [])
+    except Exception:
+        logger.exception("Error obteniendo audit logs")
+        logs = []
 
     await send_to_panel(
         websocket,

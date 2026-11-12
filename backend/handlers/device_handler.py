@@ -6,16 +6,18 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from backend.config import settings
 from backend.database.connect import get_db
-from backend.database.models import Device, DeviceNetwork, TankConfig, Telemetry
+from backend.database.models import Device, TankConfig
 from backend.handlers.state import server_state
 from backend.security.auth import (
     record_audit,
     verify_device_proof,
 )
+from backend.services import db_service
+from backend.workers.thread_pool import worker_pool
 
 logger = logging.getLogger("DispWatter.Device")
 
@@ -30,8 +32,7 @@ async def _send(websocket, payload: dict) -> None:
 
 
 async def _get_device(session, device_id: str) -> Optional[Device]:
-    result = await session.execute(select(Device).where(Device.id == device_id))
-    return result.scalar_one_or_none()
+    return await db_service.get_device_in_session(session, device_id)
 
 
 async def _ensure_device(
@@ -41,36 +42,7 @@ async def _ensure_device(
     location: str,
     firmware: str,
 ) -> Device:
-    device = await _get_device(session, device_id)
-    if device is None:
-        device = Device(
-            id=device_id,
-            name=name or f"Bebedero {device_id}",
-            location=location or "Sin ubicación",
-            firmware_version=firmware or "1.0.0",
-            key_hash=None,
-            status="PENDING_CLAIM",
-            is_online=False,
-        )
-        session.add(device)
-        session.add(TankConfig(device_id=device_id))
-        await session.commit()
-        await session.refresh(device)
-        await record_audit(
-            "DEVICE_AUTO_REGISTERED",
-            device_id=device_id,
-            details=f"Pendiente de vinculación ({device.name}, {device.location})",
-        )
-    else:
-        if device.status == "PENDING_CLAIM":
-            if name:
-                device.name = name
-            if location:
-                device.location = location
-        if firmware:
-            device.firmware_version = firmware
-        await session.commit()
-    return device
+    return await db_service.ensure_device_in_session(session, device_id, name, location, firmware)
 
 
 async def _issue_challenge(websocket, purpose: str = "auth") -> str:
@@ -287,44 +259,47 @@ async def _handle_telemetry(websocket, data: dict) -> None:
     relay_state = bool(data.get("relay_state", False))
     server_state.record_reading(device_id, distance_mm)
 
-    async with get_db() as session:
-        result = await session.execute(select(TankConfig).where(TankConfig.device_id == device_id))
-        cfg = result.scalar_one_or_none()
+    # Obtener config del tanque
+    cfg = await db_service.get_tank_config(device_id)
 
-        bottom = cfg.bottom_dist_mm if cfg else 900.0
-        mirror = cfg.mirror_dist_mm if cfg else 100.0
-        capacity = cfg.capacity_liters if cfg else 50.0
-        min_lvl = cfg.min_level_percent if cfg else 25.0
-        max_lvl = cfg.max_level_percent if cfg else 90.0
-        auto_refill = cfg.auto_refill if cfg else True
+    bottom = cfg.bottom_dist_mm if cfg else 900.0
+    mirror = cfg.mirror_dist_mm if cfg else 100.0
+    capacity = cfg.capacity_liters if cfg else 50.0
+    min_lvl = cfg.min_level_percent if cfg else 25.0
+    max_lvl = cfg.max_level_percent if cfg else 90.0
+    auto_refill = cfg.auto_refill if cfg else True
 
-        percent, liters, water_height = compute_level(distance_mm, bottom, mirror, capacity)
+    percent, liters, water_height = compute_level(distance_mm, bottom, mirror, capacity)
 
-        session.add(
-            Telemetry(
-                device_id=device_id,
-                distance_mm=distance_mm,
-                water_percent=percent,
-                water_liters=liters,
-                relay_state=relay_state,
-            )
+    # Obtener dispositivo para verificar si está claimed
+    device = await db_service.get_device(device_id)
+    device_claimed = bool(device and device.status == "CLAIMED")
+
+    # Enviar tarea al worker de device para guardar telemetría en BD
+    try:
+        await worker_pool.submit(
+            "device",
+            "save_telemetry",
+            device_id=device_id,
+            distance_mm=distance_mm,
+            water_percent=percent,
+            water_liters=liters,
+            relay_state=relay_state,
         )
-
-        device = await _get_device(session, device_id)
-        if device:
-            device.last_seen = datetime.utcnow()
-            device.is_online = True
-        device_claimed = bool(device and device.status == "CLAIMED")
-
-        await session.commit()
+    except Exception:
+        logger.exception("Error guardando telemetría en worker")
 
     global _telemetry_writes
     _telemetry_writes += 1
     if _telemetry_writes % 100 == 0:
-        cutoff = datetime.utcnow() - timedelta(hours=settings.TELEMETRY_RETENTION_HOURS)
-        async with get_db() as session:
-            await session.execute(delete(Telemetry).where(Telemetry.created_at < cutoff))
-            await session.commit()
+        try:
+            await worker_pool.submit(
+                "device",
+                "cleanup_telemetry",
+                retention_hours=settings.TELEMETRY_RETENTION_HOURS,
+            )
+        except Exception:
+            logger.exception("Error limpiando telemetría vieja")
 
     server_state.telemetry_cache[device_id] = {
         "distance_mm": distance_mm,
@@ -386,18 +361,20 @@ async def _handle_device_status(websocket, data: dict) -> None:
     ip = data.get("ip")
     wake_reason = data.get("wake_reason")
 
-    async with get_db() as session:
-        device = await _get_device(session, device_id)
-        if device:
-            device.last_seen = datetime.utcnow()
-            device.is_online = True
-            if isinstance(rssi, int):
-                device.last_rssi = rssi
-            if ip:
-                device.last_ip = str(ip)
-            if wake_reason:
-                device.wake_reason = str(wake_reason)
-            await session.commit()
+    # Enviar tarea al worker para actualizar estado del dispositivo
+    try:
+        await worker_pool.submit(
+            "device",
+            "update_device_status",
+            device_id=device_id,
+            is_online=True,
+            last_seen=True,
+            last_ip=str(ip) if ip else None,
+            last_rssi=rssi if isinstance(rssi, int) else None,
+            wake_reason=str(wake_reason) if wake_reason else None,
+        )
+    except Exception:
+        logger.exception("Error actualizando estado del dispositivo")
 
     await server_state.broadcast_to_panels(
         {
@@ -416,26 +393,15 @@ async def _handle_device_status(websocket, data: dict) -> None:
 
 
 async def _update_network_cache(device_id: str, networks: list) -> None:
-    async with get_db() as session:
-        await session.execute(delete(DeviceNetwork).where(DeviceNetwork.device_id == device_id))
-        for item in networks:
-            if not isinstance(item, dict):
-                continue
-            ssid = str(item.get("ssid") or "").strip()
-            if not ssid:
-                continue
-            session.add(
-                DeviceNetwork(
-                    device_id=device_id,
-                    ssid=ssid[:64],
-                    priority=int(item.get("priority") or 0),
-                    has_password=bool(item.get("has_password", True)),
-                    rssi=item.get("rssi"),
-                    visible=bool(item.get("visible", False)),
-                    connected=bool(item.get("connected", False)),
-                )
-            )
-        await session.commit()
+    try:
+        await worker_pool.submit(
+            "device",
+            "update_device_networks",
+            device_id=device_id,
+            networks=networks,
+        )
+    except Exception:
+        logger.exception("Error actualizando caché de redes")
 
 
 async def _handle_command_result(websocket, data: dict) -> None:

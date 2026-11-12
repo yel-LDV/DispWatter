@@ -6,12 +6,10 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 import websockets
-from sqlalchemy import update
 from websockets.server import WebSocketServerProtocol
 
 from backend.config import settings
-from backend.database.connect import get_db, init_db
-from backend.database.models import Device
+from backend.database.connect import init_db
 from backend.handlers.device_handler import handle_device_message
 from backend.handlers.panel_handler import (
     handle_panel_message,
@@ -20,6 +18,8 @@ from backend.handlers.panel_handler import (
 )
 from backend.handlers.state import server_state
 from backend.security.auth import is_origin_allowed, record_audit
+from backend.services import db_service
+from backend.workers.thread_pool import worker_pool
 
 # Configuración de Logging
 logging.basicConfig(
@@ -44,13 +44,7 @@ async def _handle_device_socket(websocket: WebSocketServerProtocol):
         device_id = server_state.unregister_device_socket(websocket)
         if device_id:
             try:
-                async with get_db() as session:
-                    await session.execute(
-                        update(Device)
-                        .where(Device.id == device_id)
-                        .values(is_online=False, last_seen=datetime.utcnow())
-                    )
-                    await session.commit()
+                await db_service.update_device_online(device_id, is_online=False)
             except Exception:
                 logger.exception("No se pudo marcar el dispositivo como offline")
             # El firmware apaga el relé al perder la conexión: el panel no debe
@@ -122,14 +116,15 @@ async def main():
     logger.info("Base de datos inicializada: %s", settings.DB_PATH)
 
     # Al arrancar, ningún dispositivo está realmente conectado.
-    async with get_db() as session:
-        await session.execute(update(Device).values(is_online=False))
-        await session.commit()
+    await db_service.mark_all_devices_offline()
 
     await record_audit("BACKEND_START", details=f"Servidor iniciado en {settings.HOST}:{settings.PORT}")
 
-    stop_event = asyncio.Event()
+    # Iniciar threads dedicados
     loop = asyncio.get_running_loop()
+    worker_pool.start(loop)
+
+    stop_event = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop_event.set)
@@ -148,6 +143,7 @@ async def main():
         await stop_event.wait()
 
     logger.info("Deteniendo servidor DispWatter...")
+    worker_pool.stop()
     await record_audit("BACKEND_STOP", details="Servidor detenido de manera ordenada.")
 
 
