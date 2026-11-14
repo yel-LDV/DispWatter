@@ -94,9 +94,11 @@ async def _bootstrap_admin() -> None:
                 root_user = User(
                     id=f"USR-ROOT-{secrets.token_hex(6)}",
                     username=username,
+                    email=f"{username}@local",
                     password_hash=hash_password(password),
                     role="admin",
                     is_active=True,
+                    is_verified=True,
                     created_at=datetime.utcnow(),
                 )
                 session.add(root_user)
@@ -123,6 +125,10 @@ async def _bootstrap_admin() -> None:
         root_user.username = username
         root_user.role = "admin"
         root_user.is_active = True
+        # Ensure email is set for users created before email column was added
+        if not root_user.email:
+            root_user.email = f"{username}@local"
+        root_user.is_verified = True
         if not verify_password(root_user.password_hash, password):
             root_user.password_hash = hash_password(password)
         await session.commit()
