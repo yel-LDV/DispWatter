@@ -44,3 +44,6 @@ hardware/esp32/main/.vscode/
 hardware/esp32/main/.pio/
 hardware/esp32/src
 backend/security/doc
+
+# Junie AI assistant (plans, session history, etc.)
+.junie/
