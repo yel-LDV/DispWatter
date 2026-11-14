@@ -26,6 +26,8 @@ typedef std::function<void()> FactoryResetCallback;
 typedef std::function<void(const String& version, size_t size)> OtaStartCallback;
 typedef std::function<void(uint8_t* data, size_t len)> OtaChunkCallback;
 typedef std::function<void()> OtaCompleteCallback;
+// Bloqueo remoto de un botón físico por su ID.
+typedef std::function<void(uint8_t buttonId, bool locked)> ButtonLockCallback;
 
 class DispComm {
 public:
@@ -50,6 +52,7 @@ public:
     void onOtaStart(OtaStartCallback cb) { _otaStartCb = cb; }
     void onOtaChunk(OtaChunkCallback cb) { _otaChunkCb = cb; }
     void onOtaComplete(OtaCompleteCallback cb) { _otaCompleteCb = cb; }
+    void onButtonLock(ButtonLockCallback cb) { _buttonLockCb = cb; }
     bool isWsConnected() const { return _wsConnected; }
     bool isAuthenticated() const { return _state == AuthState::Authenticated; }
     bool isPendingClaim() const { return _state == AuthState::PendingClaim; }
@@ -99,6 +102,7 @@ private:
     OtaStartCallback _otaStartCb;
     OtaChunkCallback _otaChunkCb;
     OtaCompleteCallback _otaCompleteCb;
+    ButtonLockCallback _buttonLockCb;
 };
 
 #endif // DISP_COMM_H

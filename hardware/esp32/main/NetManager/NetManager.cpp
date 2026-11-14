@@ -5,8 +5,17 @@
 namespace {
 constexpr unsigned long CONNECT_TIMEOUT_MS = 10000;
 constexpr unsigned long SCAN_DELAY_MS = 500;
-constexpr unsigned long STATUS_MESSAGE_MS = 3000;
+constexpr unsigned long STATUS_MESSAGE_MS = 5000;
 constexpr unsigned long RETRY_INTERVAL_MS = 250;
+constexpr unsigned LCD_COLS = 16;
+
+// Trunca un string a LCD_COLS, dejando espacio para un sufijo.
+String fit(String text, unsigned reserved = 0) {
+    unsigned maxLen = LCD_COLS;
+    if (reserved < maxLen) maxLen -= reserved;
+    if (text.length() > maxLen) text = text.substring(0, maxLen);
+    return text;
+}
 
 String wifiFailureReason(wl_status_t status) {
     if (status == WL_NO_SSID_AVAIL) return "SSID no encontrada";
@@ -49,8 +58,8 @@ String NetManager::statusLine0() const {
     switch (_state) {
         case State::Idle: return "WiFi iniciando";
         case State::Scanning: return "Escaneando WiFi";
-        case State::Connecting: return String("Probando: ") + _currentSsid;
-        case State::Connected: return String("WiFi OK: ") + connectedSSID();
+        case State::Connecting: return fit(String("Probando: ") + _currentSsid);
+        case State::Connected: return fit(String("WiFi OK: ") + connectedSSID());
         case State::Backoff: return "Sin conexion WiFi";
         default: return "Buscando WiFi";
     }
@@ -64,7 +73,7 @@ String NetManager::statusLine1() const {
         case State::Connecting:
             return String("Red ") + String(static_cast<unsigned>(_candidate)) + "/" +
                    String(static_cast<unsigned>(_candidates.size()));
-        case State::Connected: return connectedSSID();
+        case State::Connected: return fit(connectedSSID());
         case State::Backoff: {
             const unsigned long retryMs = _store.get().retryMs;
             const unsigned long elapsed = millis() - _lastScan;
@@ -77,8 +86,8 @@ String NetManager::statusLine1() const {
 }
 
 void NetManager::_showTransientMessage(const String& line0, const String& line1) {
-    _messageLine0 = line0;
-    _messageLine1 = line1;
+    _messageLine0 = fit(line0);
+    _messageLine1 = fit(line1);
     _messageUntil = millis() + STATUS_MESSAGE_MS;
 }
 
@@ -92,10 +101,12 @@ void NetManager::update() {
         if (_state != State::Connected) {
             _state = State::Connected;
             _wasConnected = true;
-            _messageUntil = 0;
             _currentSsid = WiFi.SSID();
-            Serial.printf("[WIFI] Conectado a '%s' (%d dBm) IP %s\n", WiFi.SSID().c_str(),
-                          WiFi.RSSI(), WiFi.localIP().toString().c_str());
+            int32_t signal = WiFi.RSSI();
+            Serial.printf("[WIFI] Conectado a '%s' (%ld dBm) IP %s\n", WiFi.SSID().c_str(),
+                          static_cast<long>(signal), WiFi.localIP().toString().c_str());
+            _showTransientMessage(fit(String("Conectado: ") + _currentSsid),
+                                  fit(String(signal) + " dBm OK"));
         }
         return;
     }
@@ -229,7 +240,8 @@ void NetManager::_tryNext(const String& failedSsid, const String& reason) {
     if (failedSsid.length()) {
         const String next = _nextSsid();
         Serial.printf("[WIFI] Siguiente paso: %s\n", next.c_str());
-        _showTransientMessage(String("Fallo: ") + failedSsid, reason + "; sigue " + next);
+        _showTransientMessage(String("Fallo: ") + failedSsid,
+                              reason + "; sigue " + next);
     }
 
     while (_candidate < _candidates.size()) {

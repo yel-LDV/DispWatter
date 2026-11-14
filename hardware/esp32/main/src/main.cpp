@@ -149,7 +149,7 @@ void refreshLcd() {
     } else if (comm.isPendingClaim()) {
         showLines("Pendiente vinc.", cfg.deviceId);
     } else if (!net.isConnected()) {
-        showLines("Buscando WiFi", cfg.deviceId);
+        showLines(net.statusLine0(), net.statusLine1());
     } else if (!backendAuthenticated) {
         if (comm.backendFailureVisible()) {
             showLines("Servicio no disp.", "Reintentando...");

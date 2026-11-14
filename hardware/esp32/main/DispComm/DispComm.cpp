@@ -296,6 +296,17 @@ void DispComm::_handleCommand(JsonDocument& doc) {
     if (command == "factory_reset") {
         ack(requestId, true); delay(300); if (_factoryResetCb) _factoryResetCb(); return;
     }
+    if (command == "button_lock") {
+        const uint8_t buttonId = (uint8_t)(doc["button_id"] | 0);
+        const bool locked = doc["locked"] | false;
+        if (!_buttonLockCb) {
+            ack(requestId, false, "button_lock_unavailable");
+            return;
+        }
+        _buttonLockCb(buttonId, locked);
+        ack(requestId, true);
+        return;
+    }
     ack(requestId, false, "unknown_command");
 }
 
