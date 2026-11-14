@@ -35,7 +35,7 @@ async def start_claim_by_token(
 
     # Get all online devices (any status: PENDING_CLAIM or CLAIMED)
     online_devices = []
-    for dev_id, ws in server_state.device_sockets.items():
+    for dev_id, ws in list(server_state.device_sockets.items()):
         device = await db_service.get_device(dev_id)
         if device:
             online_devices.append((dev_id, device, ws))

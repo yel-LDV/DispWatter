@@ -85,7 +85,7 @@ class PanelHandler(http.server.SimpleHTTPRequestHandler):
         path = path.split('?')[0]
         return super().translate_path(path)
 
-http.server.test(HandlerClass=PanelHandler, port=3000)
+http.server.HTTPServer(("0.0.0.0", 3000), PanelHandler).serve_forever()
 " > "$LOGS_DIR/panel.log" 2>&1 &
     PANEL_PID=$!
     echo "$PANEL_PID" > "$PANEL_PID_FILE"
