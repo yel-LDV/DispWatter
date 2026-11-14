@@ -4,34 +4,38 @@ import { state } from './state.js';
 import { el } from './ui.js';
 
 const APP_REGISTRY = {
-  dashboard:      { icon: '◉', title: 'Dashboard',      width: 900, height: 600 },
-  devices:        { icon: '⚙', title: 'Dispositivos',    width: 1000, height: 600 },
-  device_detail:  { icon: '⚙', title: 'Detalle',         width: 500, height: 450 },
-  device_config:  { icon: '⚙', title: 'Configurar',      width: 600, height: 550 },
-  history:        { icon: '📊', title: 'Historial',      width: 900, height: 500 },
-  lcd:            { icon: '🖥', title: 'LCD',            width: 600, height: 400 },
-  permissions:    { icon: '🔑', title: 'Permisos',       width: 600, height: 400 },
-  audit:          { icon: '⌁', title: 'Auditoría',       width: 900, height: 500 },
-  system:         { icon: '▤', title: 'Sistema',         width: 500, height: 400 },
-  settings:       { icon: '⚙', title: 'Ajustes',         width: 600, height: 500 },
+  dashboard:            { icon: '◉', title: 'Dashboard',      width: 900, height: 600 },
+  devices:              { icon: '⚙', title: 'Dispositivos',    width: 1000, height: 600 },
+  device_detail:        { icon: '⚙', title: 'Detalle',         width: 500, height: 450 },
+  device_settings_hub:  { icon: '⚙', title: 'Ajustes',         width: 500, height: 350 },
+  device_config:        { icon: '💧', title: 'Parámetros',     width: 600, height: 550 },
+  device_permissions:   { icon: '🔑', title: 'Permisos',       width: 600, height: 450 },
+  history:              { icon: '📊', title: 'Historial',      width: 900, height: 500 },
+  lcd:                  { icon: '🖥', title: 'LCD',            width: 600, height: 400 },
+  permissions:          { icon: '🔑', title: 'Permisos',       width: 600, height: 400 },
+  audit:                { icon: '⌁', title: 'Auditoría',       width: 900, height: 500 },
+  system:               { icon: '▤', title: 'Sistema',         width: 500, height: 400 },
+  settings:             { icon: '⚙', title: 'Ajustes',         width: 600, height: 500 },
 };
 
 const MAX_WINDOWS = 10;
 const MIN_WIDTH = 400;
 const MIN_HEIGHT = 300;
 
-/* Lazy-load app modules */
+/* Lazy-load app modules with caching */
 const appLoaders = {
-  dashboard:      () => import('./apps/dashboard.js'),
-  devices:        () => import('./apps/devices.js'),
-  device_detail:  () => import('./apps/device_detail.js'),
-  device_config:  () => import('./apps/device_config.js'),
-  history:        () => import('./apps/history.js'),
-  lcd:            () => import('./apps/lcd.js'),
-  permissions:    () => import('./apps/permissions.js'),
-  audit:          () => import('./apps/audit.js'),
-  system:         () => import('./apps/system.js'),
-  settings:       () => import('./apps/settings.js'),
+  dashboard:            { loader: () => import('./apps/dashboard.js'), module: null },
+  devices:              { loader: () => import('./apps/devices.js'), module: null },
+  device_detail:        { loader: () => import('./apps/device_detail.js'), module: null },
+  device_settings_hub:  { loader: () => import('./apps/device_settings_hub.js'), module: null },
+  device_config:        { loader: () => import('./apps/device_config.js'), module: null },
+  device_permissions:   { loader: () => import('./apps/device_permissions.js'), module: null },
+  history:              { loader: () => import('./apps/history.js'), module: null },
+  lcd:                  { loader: () => import('./apps/lcd.js'), module: null },
+  permissions:          { loader: () => import('./apps/permissions.js'), module: null },
+  audit:                { loader: () => import('./apps/audit.js'), module: null },
+  system:               { loader: () => import('./apps/system.js'), module: null },
+  settings:             { loader: () => import('./apps/settings.js'), module: null },
 };
 
 class WindowManager {
@@ -105,7 +109,31 @@ class WindowManager {
   }
 
   /** Close window and discard its state */
-  close(windowId) {
+  async close(windowId) {
+    const w = this.windows.get(windowId);
+    if (!w) return;
+
+    // If force close is set, skip check
+    if (w._forceClose) {
+      this._doClose(windowId);
+      return;
+    }
+
+    // Check if the app has a checkBeforeClose handler
+    const appId = w.appId;
+    if (appId === 'device_config' || appId === 'device_permissions') {
+      const entry = appLoaders[appId];
+      if (entry && entry.module && entry.module.checkBeforeClose) {
+        const allowed = await entry.module.checkBeforeClose(windowId);
+        if (!allowed) return; // User cancelled or validation failed
+      }
+    }
+
+    this._doClose(windowId);
+  }
+
+  /** Internal close without checks */
+  _doClose(windowId) {
     const w = this.windows.get(windowId);
     if (!w) return;
 
@@ -271,9 +299,13 @@ class WindowManager {
     if (!contentEl) return;
 
     try {
-      const loader = appLoaders[w.appId];
-      if (!loader) return;
-      const mod = await loader();
+      const entry = appLoaders[w.appId];
+      if (!entry) return;
+      let mod = entry.module;
+      if (!mod) {
+        mod = await entry.loader();
+        entry.module = mod; // Cache the loaded module
+      }
       if (mod.render) {
         // Pass additional data from window state to the app's render function
         // e.g., _deviceId for device_detail windows

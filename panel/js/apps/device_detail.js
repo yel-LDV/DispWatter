@@ -40,7 +40,7 @@ export function render(container, deviceId) {
         <div class="status-row"><span class="status-label">IP</span><span class="status-value mono">${dev.ip || '—'}</span></div>
       </div>
       <div class="btn-row" style="margin-top:16px;">
-        <button class="btn btn-primary device-config" data-id="${dev.id}">⚙ Configurar</button>
+        <button class="btn btn-primary device-settings" data-id="${dev.id}">⚙ Ajustes</button>
       </div>
       <div class="btn-row" style="margin-top:8px;">
         <button class="btn btn-ghost device-reboot" data-id="${dev.id}">Reiniciar</button>
@@ -53,11 +53,11 @@ export function render(container, deviceId) {
     </div>
   `;
 
-  // Bind Configurar button — opens device_config window
-  container.querySelector('.device-config').addEventListener('click', () => {
+  // Bind Ajustes button — opens device_settings_hub window
+  container.querySelector('.device-settings').addEventListener('click', () => {
     const wm = window.__windowManager;
     if (wm) {
-      wm.open('device_config', { singleInstance: false, _deviceId: dev.id });
+      wm.open('device_settings_hub', { singleInstance: false, _deviceId: dev.id });
     }
   });
 
