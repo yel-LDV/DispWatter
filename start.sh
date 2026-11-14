@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # DispWatter - Script de Inicio Unificado (Backend WebSocket + Panel Frontend)
+# Auto-crea entorno virtual e instala dependencias si no existen.
 # ==============================================================================
 
 set -e
@@ -13,6 +14,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 PID_DIR="$SCRIPT_DIR/.pids"
@@ -35,15 +37,37 @@ echo -e "\n${BLUE}======================================================${NC}"
 echo -e "${BLUE}        INICIANDO SISTEMA DISPWATTER                  ${NC}"
 echo -e "${BLUE}======================================================${NC}\n"
 
-# 1. Comprobar entorno virtual de Python
-PYTHON_BIN="$SCRIPT_DIR/backend/.venv/bin/python"
-if [ ! -f "$PYTHON_BIN" ]; then
-    echo -e "${RED}[ERROR]${NC} No se encontró el entorno virtual en backend/.venv"
-    echo -e "Ejecuta: python3 -m venv backend/.venv && backend/.venv/bin/pip install -r backend/requirements.txt"
+# 1. Verificar que Python 3 esté instalado
+if ! command -v python3 &>/dev/null; then
+    echo -e "${RED}[ERROR]${NC} Python 3 no está instalado."
+    echo -e "Ejecuta: ${CYAN}sudo apt update && sudo apt install -y python3 python3-venv python3-pip${NC}"
     exit 1
 fi
 
-# 2. Verificar si el backend ya está corriendo
+# 2. Verificar python3-venv
+if ! python3 -m venv --help &>/dev/null 2>&1; then
+    echo -e "${RED}[ERROR]${NC} python3-venv no está disponible."
+    echo -e "Ejecuta: ${CYAN}sudo apt install -y python3.12-venv${NC}"
+    exit 1
+fi
+
+# 3. Crear entorno virtual si no existe
+PYTHON_BIN="$SCRIPT_DIR/backend/.venv/bin/python"
+if [ ! -f "$PYTHON_BIN" ]; then
+    echo -e "${YELLOW}[SETUP]${NC} Creando entorno virtual en backend/.venv..."
+    python3 -m venv "$SCRIPT_DIR/backend/.venv"
+    echo -e "   [${GREEN}OK${NC}] Entorno virtual creado."
+
+    # Instalar dependencias
+    echo -e "${YELLOW}[SETUP]${NC} Instalando dependencias de Python..."
+    "$SCRIPT_DIR/backend/.venv/bin/pip" install --upgrade pip -q
+    "$SCRIPT_DIR/backend/.venv/bin/pip" install -r "$SCRIPT_DIR/backend/requirements.txt" -q
+    echo -e "   [${GREEN}OK${NC}] Dependencias instaladas."
+else
+    echo -e "${GREEN}[OK]${NC} Entorno virtual encontrado."
+fi
+
+# 4. Verificar si el backend ya está corriendo
 if [ -f "$BACKEND_PID_FILE" ] && kill -0 "$(cat "$BACKEND_PID_FILE")" 2>/dev/null; then
     echo -e "${YELLOW}[AVISO]${NC} El backend ya está en ejecución (PID: $(cat "$BACKEND_PID_FILE"))"
 else
@@ -61,7 +85,7 @@ else
     fi
 fi
 
-# 3. Verificar si el panel ya está corriendo
+# 5. Verificar si el panel ya está corriendo
 if [ -f "$PANEL_PID_FILE" ] && kill -0 "$(cat "$PANEL_PID_FILE")" 2>/dev/null; then
     echo -e "${YELLOW}[AVISO]${NC} El panel web ya está en ejecución (PID: $(cat "$PANEL_PID_FILE"))"
 else
@@ -79,13 +103,34 @@ else
     fi
 fi
 
+# 6. Obtener IP pública
+PUBLIC_IP=""
+for cmd in curl wget;
+do
+    if command -v "$cmd" &>/dev/null; then
+        if [ "$cmd" = "curl" ]; then
+            PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || true)
+        else
+            PUBLIC_IP=$(wget -qO- --timeout=3 https://api.ipify.org 2>/dev/null || true)
+        fi
+        break
+    fi
+done
+
 echo -e "\n------------------------------------------------------"
 echo -e "${GREEN}✔ SERVICIOS DISPWATTER LISTOS Y ACTIVOS${NC}"
 echo -e "------------------------------------------------------"
-echo -e "  🌐 Panel de Control Web:   ${BLUE}http://localhost:3000${NC}"
-echo -e "  🔌 WebSocket Hardware:     ${BLUE}ws://localhost:8765/ws/device${NC}"
-echo -e "  🖥️  WebSocket Panel:        ${BLUE}ws://localhost:8765/ws/panel${NC}"
-echo -e "  📋 Registro de Auditoría:  ${BLUE}$AUDIT_LOG_FILE${NC}"
-echo -e "  📜 Logs del Sistema:       ${BLUE}$LOGS_DIR/${NC}"
+
+if [ -n "$PUBLIC_IP" ]; then
+    echo -e "  🌍 IP Pública:              ${CYAN}$PUBLIC_IP${NC}"
+    echo -e "  🌐 Panel (remoto):          ${BLUE}http://$PUBLIC_IP:3000${NC}"
+    echo -e "  🔌 WebSocket (remoto):      ${BLUE}ws://$PUBLIC_IP:8765${NC}"
+fi
+
+echo -e "  🌐 Panel (local):           ${BLUE}http://localhost:3000${NC}"
+echo -e "  🔌 WebSocket Hardware:      ${BLUE}ws://localhost:8765/ws/device${NC}"
+echo -e "  🖥️  WebSocket Panel:         ${BLUE}ws://localhost:8765/ws/panel${NC}"
+echo -e "  📋 Registro de Auditoría:   ${BLUE}$AUDIT_LOG_FILE${NC}"
+echo -e "  📜 Logs del Sistema:        ${BLUE}$LOGS_DIR/${NC}"
 echo -e "------------------------------------------------------\n"
 echo -e "Para detener los servicios ejecuta:  ${YELLOW}./stop.sh${NC}\n"
