@@ -173,8 +173,9 @@ void DispComm::_handleJson(const char* json) {
     }
     if (event == "claim_code") {
         const String code = doc["code"] | "";
+        const int expiresIn = doc["expires_in"] | 15;
         if (_claimCodeCb && code.length() > 0) {
-            _claimCodeCb(code);
+            _claimCodeCb(code, expiresIn);
         }
         return;
     }
@@ -190,6 +191,7 @@ void DispComm::_handleJson(const char* json) {
         _setState(AuthState::Authenticated);
         _lastAuthMs = millis();
         _notifyConnection();
+        if (_claimVerifiedCb) _claimVerifiedCb();
         return;
     }
     if (doc.containsKey("command")) {

@@ -33,6 +33,17 @@ const unsigned long LEVEL_STALE_MS = 15000UL;
 bool backendAuthenticated = false;
 bool configReady = false;
 
+// Claim code display state
+bool showingClaimCode = false;
+String currentClaimCode;
+unsigned long claimCodeExpiry = 0;
+unsigned long claimFailUntil = 0;  // block new claims after expiry
+
+// Forward declarations
+void updateClaimCountdown();
+void onClaimCode(const String& code, int expiresIn);
+void onClaimVerified();
+
 String padLine(const String& text) {
     String out = text;
     if (out.length() > LCD_COLS) out = out.substring(0, LCD_COLS);
@@ -46,6 +57,27 @@ void showLines(const String& line0, const String& line1) {
 }
 
 void refreshLcd() {
+    if (showingClaimCode) {
+        updateClaimCountdown();
+        return;
+    }
+
+    // Show failure countdown after claim expiry
+    if (claimFailUntil > 0) {
+        unsigned long now = millis();
+        if (now < claimFailUntil) {
+            int remaining = (int)((claimFailUntil - now) / 1000);
+            lcd.clean();
+            lcd.print(0, 0, padLine("CODIGO EXPIRADO"));
+            String failLine = "Espera ";
+            failLine += String(remaining);
+            failLine += "s para nuevo";
+            lcd.print(0, 1, padLine(failLine));
+            return;
+        }
+        claimFailUntil = 0;
+    }
+
     if (millis() < displayOverrideUntil) return;
     const DeviceConfig& cfg = configStore.get();
 
@@ -135,6 +167,54 @@ void onFactoryReset() {
     ESP.restart();
 }
 
+void onClaimCode(const String& code, int expiresIn) {
+    showingClaimCode = true;
+    currentClaimCode = code;
+    claimCodeExpiry = millis() + (unsigned long)expiresIn * 1000UL;
+    claimFailUntil = 0;
+    lcd.clean();
+    lcd.print(0, 0, padLine("CODIGO CLAIM:"));
+    String line = "  " + code + " ";
+    line += String(expiresIn);
+    line += "s     ";
+    lcd.print(0, 1, padLine(line));
+    Serial.printf("[CLAIM] Código %s por %ds\n", code.c_str(), expiresIn);
+}
+
+void onClaimVerified() {
+    showingClaimCode = false;
+    currentClaimCode = "";
+    claimCodeExpiry = 0;
+    claimFailUntil = 0;
+    lcd.clean();
+    lcd.print(0, 0, padLine("VINCULADO"));
+    lcd.print(0, 1, padLine("Dispositivo activo"));
+    Serial.println("[CLAIM] Dispositivo vinculado exitosamente");
+}
+
+void updateClaimCountdown() {
+    if (!showingClaimCode) return;
+
+    unsigned long now = millis();
+    if (now >= claimCodeExpiry) {
+        showingClaimCode = false;
+        currentClaimCode = "";
+        claimCodeExpiry = 0;
+        claimFailUntil = now + 5000UL;
+        lcd.clean();
+        lcd.print(0, 0, padLine("CODIGO EXPIRADO"));
+        lcd.print(0, 1, padLine("Espera 5s..."));
+        Serial.println("[CLAIM] Código expirado");
+        return;
+    }
+
+    int seconds = (int)((claimCodeExpiry - now) / 1000);
+    String line = "  " + currentClaimCode + " ";
+    line += String(seconds);
+    line += "s     ";
+    lcd.print(0, 1, padLine(line));
+}
+
 void setup() {
     Serial.begin(115200);
     delay(200);
@@ -175,6 +255,8 @@ void setup() {
     comm.onReboot(onReboot);
     comm.onSleep(onSleep);
     comm.onFactoryReset(onFactoryReset);
+    comm.onClaimCode(onClaimCode);
+    comm.onClaimVerified(onClaimVerified);
     comm.begin();
     showLines("Buscando WiFi", configStore.get().deviceId);
 }
