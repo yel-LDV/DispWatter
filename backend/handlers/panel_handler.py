@@ -50,6 +50,45 @@ CALIBRATION_MAX_SPREAD_MM = 15.0
 # ---------------------------------------------------------------------------
 # Autenticación del panel
 # ---------------------------------------------------------------------------
+
+async def _do_login(username: str, password: str) -> dict:
+    """Login directo sin worker pool — consulta simple de DB."""
+    from backend.security.auth import verify_password
+    user = await db_service.get_user_by_username(username)
+    if user is None or not user.is_active or not verify_password(user.password_hash, password):
+        return {"ok": False, "error": "unauthorized"}
+    if not user.is_verified:
+        return {"ok": False, "error": "not_verified"}
+    await db_service.update_user_last_login(user.id)
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "is_verified": user.is_verified,
+        },
+    }
+
+
+async def _do_resume(user_id: str) -> dict:
+    """Resume directo sin worker pool — consulta simple de DB."""
+    user = await db_service.get_user_by_id(user_id)
+    if user is None or not user.is_active:
+        return {"ok": False, "error": "unauthorized"}
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "is_verified": user.is_verified,
+        },
+    }
+
+
 def _client_ip(websocket) -> str:
     try:
         return str(websocket.remote_address[0])
@@ -72,7 +111,6 @@ async def _login(websocket, data: dict) -> Optional[dict]:
     password = str(data.get("password") or "")
     if not username or not password:
         limiter.register_failure(ip)
-        await asyncio.sleep(0.25)
         await send_to_panel(
             websocket,
             {"event": "login_result", "ok": False, "error": "unauthorized",
@@ -80,22 +118,31 @@ async def _login(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    # Usar worker para login
+    # Login directo sin worker pool: es una consulta simple de DB.
+    # Evita el overhead de crear un event loop en un thread.
     try:
-        result = await worker_pool.submit("panel", "login", username=username, password=password)
+        result = await _do_login(username, password)
+    except asyncio.TimeoutError:
+        logger.warning("Login tardó más de 5 s para %s", username)
+        result = {"ok": False, "error": "timeout"}
     except Exception:
-        logger.exception("Error en login worker")
+        logger.exception("Error en login")
         result = {"ok": False, "error": "internal_error"}
 
     if not result.get("ok"):
         limiter.register_failure(ip)
-        await asyncio.sleep(0.35)
         error = result.get("error", "unauthorized")
         if error == "not_verified":
             await send_to_panel(
                 websocket,
                 {"event": "login_result", "ok": False, "error": "not_verified",
                  "message": "Cuenta no verificada. Revisa tu correo o solicita un nuevo email de verificación."},
+            )
+        elif error == "timeout":
+            await send_to_panel(
+                websocket,
+                {"event": "login_result", "ok": False, "error": "timeout",
+                 "message": "El servidor tardó demasiado. Inténtalo de nuevo."},
             )
         else:
             await send_to_panel(
@@ -113,7 +160,10 @@ async def _login(websocket, data: dict) -> Optional[dict]:
         websocket,
         {"event": "login_result", "ok": True, "token": token, "user": user_info},
     )
-    await record_audit("LOGIN_SUCCESS", actor=user_info["username"], details=f"IP={ip}")
+    # Auditoría en background para no retrasar la respuesta al panel
+    asyncio.create_task(
+        record_audit("LOGIN_SUCCESS", actor=user_info["username"], details=f"IP={ip}")
+    )
     return user_info
 
 
@@ -126,17 +176,22 @@ async def _resume(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    # Usar worker para resume
+    # Resume directo sin worker pool: es una consulta simple de DB.
     try:
-        result = await worker_pool.submit("panel", "resume", user_id=payload["sub"])
+        result = await _do_resume(payload["sub"])
+    except asyncio.TimeoutError:
+        logger.warning("Resume tardó más de 5 s para user %s", payload["sub"])
+        result = {"ok": False, "error": "timeout"}
     except Exception:
-        logger.exception("Error en resume worker")
+        logger.exception("Error en resume")
         result = {"ok": False, "error": "internal_error"}
 
     if not result.get("ok"):
+        error = result.get("error", "unauthorized")
+        message = "Sesión inválida" if error == "unauthorized" else "El servidor tardó demasiado. Inténtalo de nuevo."
         await send_to_panel(
             websocket,
-            {"event": "resume_result", "ok": False, "error": "unauthorized"},
+            {"event": "resume_result", "ok": False, "error": error, "message": message},
         )
         return None
 
@@ -414,9 +469,20 @@ async def _handle_update_lcd_config(user: dict, websocket, data: dict, request_i
 # Sincronización
 # ---------------------------------------------------------------------------
 async def send_full_sync(websocket) -> None:
+    """Enviar sincronización completa al panel.
+
+    Se ejecuta de forma asíncrona (fire-and-forget) para no bloquear
+    el login. Si falla, el panel pedirá sync manualmente.
+    """
     try:
-        result = await worker_pool.submit("panel", "get_all_devices")
+        result = await asyncio.wait_for(
+            worker_pool.submit("panel", "get_all_devices"),
+            timeout=5.0,
+        )
         device_list = result.get("devices", [])
+    except asyncio.TimeoutError:
+        logger.warning("Sync tardó más de 5 s; se enviará lista vacía")
+        device_list = []
     except Exception:
         logger.exception("Error en sync worker")
         device_list = []
@@ -637,6 +703,98 @@ async def _handle_relay(user: dict, websocket, data: dict, request_id: Optional[
     await send_to_panel(websocket, payload)
 
 
+async def _handle_set_auto_refill(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Toggle auto refill for a device via update_config."""
+    device_id = str(data.get("device_id") or "")
+    auto_refill = bool(data.get("auto_refill", False))
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+
+    # Update auto_refill in DB
+    await db_service.update_tank_config(device_id, auto_refill=auto_refill)
+
+    # Send command to device
+    result = await request_device(
+        websocket,
+        user,
+        device_id,
+        {"command": "set_auto_refill", "auto_refill": auto_refill, "request_id": request_id},
+    )
+    ok = bool(result.get("ok", False))
+
+    if ok:
+        await record_audit(
+            "AUTO_REFILL_CHANGED",
+            device_id=device_id,
+            actor=user.get("username", "USER"),
+            details=f"auto_refill={auto_refill}",
+        )
+
+    await send_ack(websocket, request_id, ok, result.get("error", ""))
+    await _broadcast_sync()
+
+
+async def _handle_device_command(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Handle direct device commands: reboot, sleep, factory_reset."""
+    device_id = str(data.get("device_id") or "")
+    command = str(data.get("command") or "")
+    if not command:
+        # Fallback: use the event name as the command
+        command = str(data.get("event") or "")
+
+    if command not in {"reboot", "sleep", "factory_reset"}:
+        await send_error(websocket, request_id, "invalid_params", "Comando desconocido")
+        return
+
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+
+    if command == "factory_reset" and user.get("role") != "admin":
+        await send_error(websocket, request_id, "forbidden", "Solo un administrador puede resetear")
+        return
+
+    cmd_payload = {"command": command, "request_id": request_id}
+    if command == "sleep":
+        try:
+            minutes = int(data.get("minutes", 60))
+        except (TypeError, ValueError):
+            await send_error(websocket, request_id, "invalid_params", "Minutos inválidos")
+            return
+        if not 1 <= minutes <= 1440:
+            await send_error(websocket, request_id, "invalid_params", "Minutos fuera de rango")
+            return
+        cmd_payload["minutes"] = minutes
+
+    result = await request_device(
+        websocket,
+        user,
+        device_id,
+        cmd_payload,
+    )
+    ok = bool(result.get("ok", False))
+    if ok:
+        details = f"command={command}"
+        if command == "sleep":
+            details += f" minutes={cmd_payload['minutes']}"
+        await record_audit(
+            f"DEVICE_{command.upper()}",
+            device_id=device_id,
+            actor=user.get("username", "USER"),
+            details=details,
+        )
+    await send_ack(websocket, request_id, ok, result.get("error", ""))
+
+
+async def _handle_panel_logout(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Logout a panel user by removing their session."""
+    server_state.unregister_panel(websocket)
+    await send_to_panel(websocket, {"event": "logout_result", "ok": True})
+
+
 # ---------------------------------------------------------------------------
 # Calibración del sensor
 # ---------------------------------------------------------------------------
@@ -779,6 +937,38 @@ async def _handle_display(user: dict, websocket, data: dict, request_id: Optiona
     await send_ack(websocket, result.get("request_id", request_id), ok, result.get("error", ""))
 
 
+async def _handle_add_device(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Add a device manually by ID from the panel."""
+    if user.get("role") != "admin":
+        await send_error(websocket, request_id, "forbidden")
+        return
+    device_id = str(data.get("device_id") or "").strip()
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+    try:
+        result = await worker_pool.submit(
+            "panel", "add_device", device_id=device_id, owner_id=user["id"]
+        )
+    except Exception:
+        logger.exception("Error agregando dispositivo")
+        await send_error(websocket, request_id, "hardware_error", "Error interno")
+        return
+    if result.get("ok"):
+        await record_audit(
+            "DEVICE_MANUAL_ADDED",
+            device_id=device_id,
+            actor=user.get("username", "USER"),
+            details=f"Dispositivo {device_id} agregado manualmente.",
+        )
+        await send_ack(websocket, request_id, True)
+        await _broadcast_sync()
+    else:
+        error = result.get("error", "unknown")
+        message = result.get("message", "Error desconocido")
+        await send_error(websocket, request_id, error, message)
+
+
 async def _handle_delete_device(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
     if user.get("role") != "admin":
         await send_error(websocket, request_id, "forbidden")
@@ -849,7 +1039,8 @@ async def _handle_change_password(user: dict, websocket, data: dict, request_id:
     """Change user password."""
     from backend.services.auth_service import change_password
 
-    old_password = str(data.get("old_password") or "")
+    # Panel envía "current", el handler original esperaba "old_password"
+    old_password = str(data.get("old_password") or data.get("current") or "")
     new_password = str(data.get("new_password") or "")
 
     if not old_password or not new_password:
@@ -1100,6 +1291,8 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
                 user, websocket, request_id,
                 str(data.get("target") or ""), str(data.get("action") or ""),
             )
+        elif event == "add_device":
+            await _handle_add_device(user, websocket, data, request_id)
         elif event == "delete_device":
             await _handle_delete_device(user, websocket, data, request_id)
         elif event == "release_device":
@@ -1122,8 +1315,16 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_update_lcd_config(user, websocket, data, request_id)
         elif event == "calibrate":
             await _handle_calibrate(user, websocket, data, request_id)
+        elif event == "set_relay":
+            await _handle_relay(user, websocket, data, request_id)
         elif command == "set_relay":
             await _handle_relay(user, websocket, data, request_id)
+        elif event == "set_auto_refill":
+            await _handle_set_auto_refill(user, websocket, data, request_id)
+        elif event in ("reboot", "sleep", "factory_reset"):
+            await _handle_device_command(user, websocket, data, request_id)
+        elif event == "logout":
+            await _handle_panel_logout(user, websocket, data, request_id)
         elif command == "display":
             await _handle_display(user, websocket, data, request_id)
         elif event == "list_ota_versions":
@@ -1140,6 +1341,19 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_set_all_permissions(user, websocket, data, request_id)
         elif event == "sync":
             await send_full_sync(websocket)
+        elif event == "resume":
+            # El panel puede enviar resume después de reconectar.
+            # Si ya está autenticado, ignorar; si no, pedir login.
+            if user:
+                await send_to_panel(
+                    websocket,
+                    {"event": "resume_result", "ok": True, "user": user},
+                )
+            else:
+                await send_to_panel(
+                    websocket,
+                    {"event": "resume_result", "ok": False, "error": "unauthorized"},
+                )
         else:
             await send_error(websocket, request_id, "invalid_params", "Evento no soportado")
     except Exception:

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.orm import joinedload
 
 from backend.config import settings
 from backend.database.connect import get_db
@@ -233,6 +234,37 @@ async def update_device_fields_in_session(
     await session.commit()
 
 
+async def add_device_manual(device_id: str, owner_id: str) -> Dict[str, Any]:
+    """Manually add a device by ID from the panel.
+    Creates the device in PENDING_CLAIM status and assigns it to the user."""
+    async with get_db() as session:
+        existing = await get_device_in_session(session, device_id)
+        if existing is not None:
+            return {"ok": False, "error": "already_exists", "message": f"El dispositivo {device_id} ya existe."}
+        device = Device(
+            id=device_id,
+            name=f"Bebedero {device_id}",
+            location="Sin ubicación",
+            firmware_version="desconocido",
+            serial_number=None,
+            key_hash=None,
+            owner_id=owner_id,
+            status="PENDING_CLAIM",
+            is_online=False,
+        )
+        session.add(device)
+        session.add(TankConfig(device_id=device_id))
+        await session.commit()
+        await session.refresh(device)
+        await record_audit(
+            "DEVICE_MANUAL_ADD",
+            device_id=device_id,
+            actor=owner_id,
+            details=f"Dispositivo agregado manualmente desde el panel.",
+        )
+        return {"ok": True, "device_id": device_id}
+
+
 async def delete_device(device_id: str) -> None:
     async with get_db() as session:
         await session.execute(delete(Device).where(Device.id == device_id))
@@ -454,27 +486,24 @@ async def update_device_networks(device_id: str, networks: list) -> None:
 
 async def get_all_devices_for_sync() -> List[Dict[str, Any]]:
     """Returns all devices with config and networks for panel sync.
-    Callers must merge telemetry_cache and server_state data."""
+    Uses joinedload to fetch all data in a single query instead of N+1."""
     from backend.handlers.state import server_state
 
     async with get_db() as session:
-        result = await session.execute(select(Device).order_by(Device.created_at))
-        devices = result.scalars().all()
+        result = await session.execute(
+            select(Device)
+            .options(
+                joinedload(Device.config),
+                joinedload(Device.networks),
+            )
+            .order_by(Device.created_at)
+        )
+        devices = result.scalars().unique().all()
 
         device_list = []
         for dev in devices:
-            cfg_res = await session.execute(
-                select(TankConfig).where(TankConfig.device_id == dev.id)
-            )
-            cfg = cfg_res.scalar_one_or_none()
-
-            net_res = await session.execute(
-                select(DeviceNetwork)
-                .where(DeviceNetwork.device_id == dev.id)
-                .order_by(DeviceNetwork.priority)
-            )
-            networks = net_res.scalars().all()
-
+            cfg = dev.config
+            networks = dev.networks or []
             cached = server_state.telemetry_cache.get(dev.id)
             device_list.append(
                 {

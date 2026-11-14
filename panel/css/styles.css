@@ -9,10 +9,10 @@
 .login-card {
   width: min(420px, 100%);
   padding: var(--space-7) var(--space-6);
-  background: linear-gradient(180deg, rgba(19, 32, 58, 0.94), rgba(7, 11, 18, 0.96));
+  background: linear-gradient(180deg, rgba(30, 18, 32, 0.94), rgba(10, 5, 8, 0.96));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), var(--glow-cyan);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), var(--glow-crimson);
   position: relative;
   overflow: hidden;
 }
@@ -21,7 +21,7 @@
   content: "";
   position: absolute;
   inset: -1px;
-  background: linear-gradient(120deg, transparent 20%, rgba(0, 229, 255, 0.22), transparent 70%);
+  background: linear-gradient(120deg, transparent 20%, rgba(220, 38, 38, 0.22), transparent 70%);
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask-composite: exclude;
   padding: 1px;
@@ -42,9 +42,9 @@
   display: grid;
   place-items: center;
   border-radius: 14px;
-  background: radial-gradient(circle at 30% 20%, rgba(0, 229, 255, 0.4), rgba(45, 123, 255, 0.08));
+  background: radial-gradient(circle at 30% 20%, rgba(220, 38, 38, 0.4), rgba(239, 68, 68, 0.08));
   border: 1px solid var(--border-strong);
-  box-shadow: var(--glow-cyan);
+  box-shadow: var(--glow-crimson);
 }
 
 .logo-mark svg {
@@ -54,7 +54,7 @@
 
 .brand-title {
   font-size: 24px;
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
+  background: linear-gradient(90deg, var(--neon-crimson), var(--crimson-light));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -109,7 +109,7 @@
   height: 100vh;
   padding: var(--space-5) var(--space-4);
   border-right: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(11, 18, 32, 0.9), rgba(5, 8, 15, 0.96));
+  background: linear-gradient(180deg, rgba(26, 14, 18, 0.9), rgba(10, 5, 8, 0.96));
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
@@ -158,15 +158,15 @@
 }
 
 .nav-item:hover {
-  background: rgba(0, 229, 255, 0.06);
+  background: rgba(220, 38, 38, 0.06);
   color: var(--text-0);
 }
 
 .nav-item.active {
-  color: var(--neon-cyan);
+  color: var(--neon-crimson);
   border-color: var(--border);
-  background: rgba(0, 229, 255, 0.08);
-  box-shadow: inset 0 0 24px rgba(0, 229, 255, 0.06);
+  background: rgba(220, 38, 38, 0.08);
+  box-shadow: inset 0 0 24px rgba(220, 38, 38, 0.06);
 }
 
 .nav-icon {
@@ -198,7 +198,7 @@
   gap: var(--space-4);
   padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--border);
-  background: rgba(5, 8, 15, 0.78);
+  background: rgba(10, 5, 8, 0.78);
   backdrop-filter: blur(16px);
 }
 
@@ -229,7 +229,7 @@
   font-family: var(--font-mono);
   font-size: 10px;
   text-transform: uppercase;
-  color: var(--neon-cyan);
+  color: var(--neon-crimson);
 }
 
 .content {
@@ -250,7 +250,7 @@
 
 /* ============================== Cards ============================== */
 .card {
-  background: linear-gradient(180deg, rgba(19, 32, 58, 0.9), rgba(11, 18, 32, 0.92));
+  background: linear-gradient(180deg, rgba(30, 18, 32, 0.9), rgba(15, 11, 19, 0.92));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -284,7 +284,7 @@
   padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(7, 11, 18, 0.55);
+  background: rgba(10, 5, 8, 0.55);
 }
 
 .metric-label {
@@ -403,7 +403,7 @@
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-3) 0;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.09);
+  border-bottom: 1px solid rgba(220, 38, 38, 0.09);
   font-size: 14px;
 }
 
@@ -474,12 +474,12 @@
 }
 
 .badge.info {
-  color: var(--neon-cyan);
+  color: var(--neon-crimson);
   border-color: var(--border-strong);
 }
 .badge.info .dot {
-  background: var(--neon-cyan);
-  box-shadow: 0 0 10px var(--neon-cyan);
+  background: var(--neon-crimson);
+  box-shadow: 0 0 10px var(--neon-crimson);
 }
 
 @keyframes pulse {
@@ -510,24 +510,24 @@
 }
 
 .btn-primary {
-  background: linear-gradient(180deg, var(--neon-cyan), #00b8d4);
-  color: #041016;
-  box-shadow: 0 10px 24px rgba(0, 229, 255, 0.18);
+  background: linear-gradient(180deg, var(--neon-crimson), var(--crimson-dark));
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(220, 38, 38, 0.18);
 }
 
 .btn-primary:hover:not(:disabled) {
-  box-shadow: var(--glow-cyan), 0 12px 26px rgba(0, 229, 255, 0.24);
+  box-shadow: var(--glow-crimson), 0 12px 26px rgba(220, 38, 38, 0.24);
 }
 
 .btn-ghost {
   border-color: var(--border-strong);
-  color: var(--neon-cyan);
-  background: rgba(0, 229, 255, 0.04);
+  color: var(--neon-crimson);
+  background: rgba(220, 38, 38, 0.04);
 }
 
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(0, 229, 255, 0.1);
-  box-shadow: var(--glow-cyan);
+  background: rgba(220, 38, 38, 0.1);
+  box-shadow: var(--glow-crimson);
 }
 
 .btn-danger {
@@ -590,15 +590,15 @@
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: rgba(5, 8, 15, 0.8);
+  background: rgba(10, 5, 8, 0.8);
   color: var(--text-0);
   transition: border-color 0.18s, box-shadow 0.18s;
 }
 
 .field input:focus,
 .field select:focus {
-  border-color: var(--neon-cyan);
-  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.12);
+  border-color: var(--neon-crimson);
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
   outline: none;
 }
 
@@ -617,7 +617,7 @@
 .check-row input {
   width: 18px;
   height: 18px;
-  accent-color: var(--neon-cyan);
+  accent-color: var(--neon-crimson);
 }
 
 .password-wrap {
@@ -645,14 +645,14 @@
 }
 
 .password-toggle:hover {
-  color: var(--neon-cyan);
+  color: var(--neon-crimson);
 }
 
 .select-inline {
   padding: 8px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: rgba(5, 8, 15, 0.8);
+  background: rgba(10, 5, 8, 0.8);
   color: var(--text-0);
   min-width: 180px;
 }
@@ -678,20 +678,20 @@ thead th {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-2);
-  background: rgba(5, 8, 15, 0.6);
+  background: rgba(10, 5, 8, 0.6);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 tbody td {
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(0, 229, 255, 0.07);
+  border-bottom: 1px solid rgba(220, 38, 38, 0.07);
   color: var(--text-1);
   vertical-align: middle;
 }
 
 tbody tr:hover {
-  background: rgba(0, 229, 255, 0.04);
+  background: rgba(220, 38, 38, 0.04);
 }
 
 tbody tr:last-child td {
@@ -719,7 +719,7 @@ tbody tr:last-child td {
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(7, 11, 18, 0.55);
+  background: rgba(10, 5, 8, 0.55);
 }
 
 .network-item.connected {
@@ -730,7 +730,7 @@ tbody tr:last-child td {
 .network-rank {
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--neon-cyan);
+  color: var(--neon-crimson);
   width: 24px;
   text-align: center;
 }
@@ -797,8 +797,8 @@ tbody tr:last-child td {
 
 .icon-btn:hover:not(:disabled) {
   border-color: var(--border-strong);
-  color: var(--neon-cyan);
-  background: rgba(0, 229, 255, 0.06);
+  color: var(--neon-crimson);
+  background: rgba(220, 38, 38, 0.06);
 }
 
 .icon-btn.danger:hover:not(:disabled) {
@@ -823,8 +823,8 @@ tbody tr:last-child td {
   padding: 12px 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-strong);
-  background: rgba(11, 18, 32, 0.96);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5), var(--glow-cyan);
+  background: rgba(15, 11, 19, 0.96);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5), var(--glow-crimson);
   color: var(--text-0);
   font-size: 13px;
   animation: toast-in 0.22s ease;
@@ -868,8 +868,8 @@ tbody tr:last-child td {
   padding: var(--space-5);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-strong);
-  background: linear-gradient(180deg, rgba(19, 32, 58, 0.98), rgba(7, 11, 18, 0.99));
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), var(--glow-cyan);
+  background: linear-gradient(180deg, rgba(30, 18, 32, 0.98), rgba(10, 5, 8, 0.99));
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), var(--glow-crimson);
 }
 
 .modal-head {
@@ -894,7 +894,7 @@ tbody tr:last-child td {
 }
 
 .modal-close:hover {
-  color: var(--neon-cyan);
+  color: var(--neon-crimson);
 }
 
 .modal-actions {
@@ -918,7 +918,7 @@ tbody tr:last-child td {
 
 .notice.info {
   border-color: var(--border);
-  background: rgba(0, 229, 255, 0.05);
+  background: rgba(220, 38, 38, 0.05);
 }
 
 .system-output {
@@ -929,7 +929,7 @@ tbody tr:last-child td {
   padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(3, 6, 12, 0.8);
+  background: rgba(10, 5, 8, 0.8);
   color: var(--text-1);
   font-family: var(--font-mono);
   font-size: 12px;
@@ -1023,7 +1023,7 @@ tbody tr:last-child td {
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(0, 229, 255, 0.04);
+  background: rgba(220, 38, 38, 0.04);
   cursor: pointer;
 }
 
@@ -1099,7 +1099,7 @@ tbody tr:last-child td {
 }
 
 .switch input:focus-visible + .switch-track {
-  outline: 2px solid var(--neon-cyan);
+  outline: 2px solid var(--neon-crimson);
   outline-offset: 2px;
 }
 
@@ -1124,7 +1124,7 @@ tbody tr:last-child td {
   padding: var(--space-4);
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-md);
-  background: rgba(0, 229, 255, 0.03);
+  background: rgba(220, 38, 38, 0.03);
 }
 
 .calib-live {
