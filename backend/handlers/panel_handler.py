@@ -577,8 +577,11 @@ async def _handle_claim(user: dict, websocket, data: dict, request_id: Optional[
 # ---------------------------------------------------------------------------
 # Configuración del tanque
 # ---------------------------------------------------------------------------
-async def _handle_update_config(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+async def _handle_update_device_config(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Update device name, location and tank config (including menu_lock). Sends config to ESP32."""
     device_id = str(data.get("device_id") or "")
+    name = str(data.get("name") or "").strip()
+    location = str(data.get("location") or "").strip()
     cfg_data = data.get("config") or {}
     if not isinstance(cfg_data, dict):
         await send_error(websocket, request_id, "invalid_params")
@@ -596,6 +599,9 @@ async def _handle_update_config(user: dict, websocket, data: dict, request_id: O
         min_level = float(cfg_data.get("min_level", 25.0))
         max_level = float(cfg_data.get("max_level", 90.0))
         auto_refill = bool(cfg_data.get("auto_refill", True))
+        min_relay_off = float(cfg_data.get("min_relay_off_min", 3.0))
+        overflow_protection = bool(cfg_data.get("overflow_protection", True))
+        menu_lock = bool(cfg_data.get("menu_lock", False))
     except (TypeError, ValueError):
         await send_error(websocket, request_id, "invalid_params", "Valores numéricos inválidos")
         return
@@ -625,35 +631,77 @@ async def _handle_update_config(user: dict, websocket, data: dict, request_id: O
         )
         return
 
-    # Usar worker para actualizar config
-    try:
-        await worker_pool.submit(
-            "panel",
-            "update_tank_config",
-            device_id=device_id,
-            capacity_liters=capacity,
-            bottom_dist_mm=bottom,
-            mirror_dist_mm=mirror,
-            min_level_percent=min_level,
-            max_level_percent=max_level,
-            auto_refill=auto_refill,
-        )
-    except Exception:
-        logger.exception("Error actualizando config")
-        await send_error(websocket, request_id, "hardware_error", "Error interno")
-        return
+    async with get_db() as session:
+        dev = await session.execute(select(Device).where(Device.id == device_id))
+        dev = dev.scalar_one_or_none()
+        if dev is None:
+            await send_error(websocket, request_id, "not_found", "Dispositivo no encontrado")
+            return
 
-    # Cambiar la configuración (p. ej. reactivar el automático) levanta la pausa manual.
+        # Update device name and location
+        if name:
+            dev.name = name
+        if location:
+            dev.location = location
+
+        # Update or create tank config
+        if dev.config is None:
+            from backend.database.models import TankConfig
+            dev.config = TankConfig(device_id=device_id)
+        tc = dev.config
+        tc.capacity_liters = capacity
+        tc.bottom_dist_mm = bottom
+        tc.mirror_dist_mm = mirror
+        tc.min_level_percent = min_level
+        tc.max_level_percent = max_level
+        tc.auto_refill = auto_refill
+        tc.min_relay_off_min = min_relay_off
+        tc.overflow_protection = overflow_protection
+        tc.menu_lock = menu_lock
+
+        await session.commit()
+
+    # Clear manual hold when config changes
     server_state.clear_manual_hold(device_id)
+
+    # Send config to ESP32 device
+    await request_device(
+        websocket,
+        user,
+        device_id,
+        {
+            "command": "update_config",
+            "config": {
+                "capacity": capacity,
+                "bottom_dist_mm": bottom,
+                "mirror_dist_mm": mirror,
+                "min_level": min_level,
+                "max_level": max_level,
+                "auto_refill": auto_refill,
+                "min_relay_off_min": min_relay_off,
+                "overflow_protection": overflow_protection,
+                "menu_lock": menu_lock,
+            },
+            "request_id": request_id,
+        },
+    )
 
     await record_audit(
         "CONFIG_UPDATED",
         device_id=device_id,
         actor=user.get("username", "USER"),
-        details=f"capacity={capacity} bottom={bottom} mirror={mirror} min={min_level} max={max_level} auto={auto_refill}",
+        details=f"name={name} location={location} capacity={capacity} bottom={bottom} mirror={mirror} min={min_level} max={max_level} auto={auto_refill} min_off={min_relay_off} overflow={overflow_protection} menu_lock={menu_lock}",
     )
-    await send_ack(websocket, request_id, True)
     await _broadcast_sync()
+
+
+async def _handle_update_config(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Legacy handler — delegates to update_device_config for backward compatibility."""
+    wrapped = dict(data)
+    wrapped.setdefault("config", {})
+    wrapped.setdefault("name", "")
+    wrapped.setdefault("location", "")
+    await _handle_update_device_config(user, websocket, wrapped, request_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1267,6 +1315,8 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_verify_claim(user, websocket, data, request_id)
         elif event == "update_config":
             await _handle_update_config(user, websocket, data, request_id)
+        elif event == "update_device_config":
+            await _handle_update_device_config(user, websocket, data, request_id)
         elif event == "wifi_list":
             await handle_wifi_list(user, websocket, device_id, request_id)
         elif event == "wifi_add":

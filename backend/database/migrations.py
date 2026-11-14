@@ -20,6 +20,7 @@ USER_COLUMNS = {
 TANK_CONFIG_COLUMNS = {
     "min_relay_off_min": "FLOAT NOT NULL DEFAULT 3.0",
     "overflow_protection": "BOOLEAN NOT NULL DEFAULT 1",
+    "menu_lock": "BOOLEAN NOT NULL DEFAULT 0",
 }
 
 DEVICE_COLUMNS = {

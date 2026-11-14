@@ -314,6 +314,15 @@ void DispComm::_handleCommand(JsonDocument& doc) {
         ack(requestId, true);
         return;
     }
+    if (command == "update_config") {
+        if (_configUpdateCb && doc.containsKey("config")) {
+            String jsonConfig;
+            serializeJson(doc["config"], jsonConfig);
+            _configUpdateCb(jsonConfig);
+        }
+        ack(requestId, true);
+        return;
+    }
     ack(requestId, false, "unknown_command");
 }
 

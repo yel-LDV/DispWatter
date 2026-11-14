@@ -7,6 +7,7 @@ const APP_REGISTRY = {
   dashboard:      { icon: '◉', title: 'Dashboard',      width: 900, height: 600 },
   devices:        { icon: '⚙', title: 'Dispositivos',    width: 1000, height: 600 },
   device_detail:  { icon: '⚙', title: 'Detalle',         width: 500, height: 450 },
+  device_config:  { icon: '⚙', title: 'Configurar',      width: 600, height: 550 },
   history:        { icon: '📊', title: 'Historial',      width: 900, height: 500 },
   lcd:            { icon: '🖥', title: 'LCD',            width: 600, height: 400 },
   permissions:    { icon: '🔑', title: 'Permisos',       width: 600, height: 400 },
@@ -24,6 +25,7 @@ const appLoaders = {
   dashboard:      () => import('./apps/dashboard.js'),
   devices:        () => import('./apps/devices.js'),
   device_detail:  () => import('./apps/device_detail.js'),
+  device_config:  () => import('./apps/device_config.js'),
   history:        () => import('./apps/history.js'),
   lcd:            () => import('./apps/lcd.js'),
   permissions:    () => import('./apps/permissions.js'),
@@ -93,6 +95,7 @@ class WindowManager {
       zIndex: ++this.zCounter,
       _preMax: null,
       _loaded: false,
+      _deviceId: options._deviceId ?? null,
     };
 
     this.windows.set(windowId, w);

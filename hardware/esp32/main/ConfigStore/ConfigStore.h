@@ -47,6 +47,8 @@ struct DeviceConfig {
 
     // Actualización automática de firmware
     bool autoUpdate = false;
+    // Bloqueo del menú de ajustes (Power+Back)
+    bool menuLock = false;
 };
 
 /**
@@ -75,6 +77,7 @@ public:
     // Modificadores de configuración con guardado automático
     void setOverflowProtection(bool value);
     void setAutoUpdate(bool value);
+    void setMenuLock(bool value);
 
 private:
     DeviceConfig _cfg;

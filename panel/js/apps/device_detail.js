@@ -40,6 +40,9 @@ export function render(container, deviceId) {
         <div class="status-row"><span class="status-label">IP</span><span class="status-value mono">${dev.ip || '—'}</span></div>
       </div>
       <div class="btn-row" style="margin-top:16px;">
+        <button class="btn btn-primary device-config" data-id="${dev.id}">⚙ Configurar</button>
+      </div>
+      <div class="btn-row" style="margin-top:8px;">
         <button class="btn btn-ghost device-reboot" data-id="${dev.id}">Reiniciar</button>
         <button class="btn btn-ghost device-sleep" data-id="${dev.id}">Dormir</button>
         <button class="btn btn-magenta device-reset" data-id="${dev.id}">Reset fábrica</button>
@@ -49,6 +52,14 @@ export function render(container, deviceId) {
       </div>
     </div>
   `;
+
+  // Bind Configurar button — opens device_config window
+  container.querySelector('.device-config').addEventListener('click', () => {
+    const wm = window.__windowManager;
+    if (wm) {
+      wm.open('device_config', { singleInstance: false, _deviceId: dev.id });
+    }
+  });
 
   // Bind action buttons — each opens a blocking modal dialog
   container.querySelector('.device-reboot').addEventListener('click', async () => {

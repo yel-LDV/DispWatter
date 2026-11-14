@@ -563,6 +563,26 @@ void setup() {
         settingsMenu.deactivate();
         Serial.println("[MENU] Cerrado remotamente desde el panel");
     });
+    comm.onConfigUpdate([](const String& jsonConfig) {
+        // Parse config update from backend and apply to ConfigStore
+        DynamicJsonDocument doc(512);
+        DeserializationError err = deserializeJson(doc, jsonConfig);
+        if (err) {
+            Serial.printf("[CONFIG] Error parseando config: %s\n", err.c_str());
+            return;
+        }
+        if (doc.containsKey("menu_lock")) {
+            configStore.setMenuLock(doc["menu_lock"] | false);
+            Serial.printf("[CONFIG] menu_lock=%d\n", configStore.get().menuLock);
+        }
+        if (doc.containsKey("overflow_protection")) {
+            configStore.setOverflowProtection(doc["overflow_protection"] | true);
+        }
+        if (doc.containsKey("auto_update")) {
+            configStore.setAutoUpdate(doc["auto_update"] | false);
+        }
+        Serial.println("[CONFIG] Configuración actualizada desde el panel");
+    });
     comm.begin();
     ota.begin();
 
@@ -612,8 +632,11 @@ void loop() {
     // ==========================================================================
 
     // Detectar activación: Power (GPIO 32) + Back presionados simultáneamente
+    // Solo si el menú no está bloqueado por el panel
     bool powerPressed = (digitalRead(BTN_POWER_PIN) == LOW);
-    settingsMenu.checkActivation(powerPressed, btnBack.isPressed());
+    if (!configStore.get().menuLock) {
+        settingsMenu.checkActivation(powerPressed, btnBack.isPressed());
+    }
 
     if (settingsMenu.isAnimating() || settingsMenu.isActive()) {
         settingsMenu.update();

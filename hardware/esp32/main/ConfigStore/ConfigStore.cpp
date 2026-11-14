@@ -86,6 +86,7 @@ bool ConfigStore::save() {
     dev["firmware"] = _cfg.firmware;
     dev["key_hash"] = _cfg.keyHash;
     dev["auto_update"] = _cfg.autoUpdate;
+    dev["menu_lock"] = _cfg.menuLock;
 
     JsonObject backend = doc.createNestedObject("backend");
     backend["host"] = _cfg.backendHost;
@@ -168,6 +169,7 @@ bool ConfigStore::_applyJson(JsonVariantConst root, DeviceConfig& out) {
     out.firmware = dev["firmware"] | "1.1.1";
     out.keyHash = dev["key_hash"] | "";
     out.autoUpdate = dev["auto_update"] | false;
+    out.menuLock = dev["menu_lock"] | false;
 
     JsonObjectConst backend = root["backend"];
     out.backendHost = backend["host"] | "";
@@ -369,5 +371,10 @@ void ConfigStore::setOverflowProtection(bool value) {
 
 void ConfigStore::setAutoUpdate(bool value) {
     _cfg.autoUpdate = value;
+    save();
+}
+
+void ConfigStore::setMenuLock(bool value) {
+    _cfg.menuLock = value;
     save();
 }
