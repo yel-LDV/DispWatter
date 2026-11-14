@@ -626,6 +626,11 @@ void setup() {
         // /config.json; they are applied at runtime via the backend sync.
         if (changed) {
             Serial.println("[CONFIG] Configuración actualizada desde el panel");
+            // Show "Datos actualizados" message on LCD for 3 seconds
+            displayOverrideUntil = millis() + 3000UL;
+            lcd.clean();
+            lcd.print(0, 0, padLine("Datos actualizados"));
+            lcd.print(0, 1, padLine("Configuracion OK"));
         }
     });
     comm.begin();

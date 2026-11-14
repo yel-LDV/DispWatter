@@ -745,7 +745,7 @@ async def _handle_get_device_config(user: dict, websocket, data: dict, request_i
         await send_error(websocket, request_id, "invalid_params", "device_id requerido")
         return
 
-    device, error = await authorize_device(user, device_id)
+    device_info, error = await authorize_device(user, device_id)
     if error:
         await send_error(websocket, request_id, error)
         return
@@ -777,8 +777,8 @@ async def _handle_get_device_config(user: dict, websocket, data: dict, request_i
             "request_id": request_id,
             "ok": True,
             "device_id": device_id,
-            "name": device.name or "",
-            "location": device.location or "",
+            "name": device_info.get("name") or "",
+            "location": device_info.get("location") or "",
             "config": cfg_dict,
         },
     )

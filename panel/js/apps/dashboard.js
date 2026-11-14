@@ -33,14 +33,15 @@ function initDashboard(container) {
   const autoSwitch = container.querySelector('.dash-auto-switch');
   if (autoSwitch) autoSwitch.checked = !!autoRefill;
 
-  // Update telemetry display if cached data is available
+  // Update telemetry display - always update, even if values are null initially
+  const pct = dev.waterPercent != null ? dev.waterPercent : '—';
+  container.querySelector('#dash-percent').textContent = pct;
+  container.querySelector('#dash-liters').textContent = dev.waterLiters ?? '—';
+  container.querySelector('#dash-dist').textContent = dev.currentDist ?? '—';
+  // Tank fill
+  const fill = container.querySelector('.tank-fill');
+  const pctDisplay = container.querySelector('.tank-percent');
   if (dev.waterPercent != null) {
-    container.querySelector('#dash-percent').textContent = dev.waterPercent;
-    container.querySelector('#dash-liters').textContent = dev.waterLiters ?? '—';
-    container.querySelector('#dash-dist').textContent = dev.currentDist ?? '—';
-    // Tank fill
-    const fill = container.querySelector('.tank-fill');
-    const pctDisplay = container.querySelector('.tank-percent');
     if (fill) {
       fill.style.height = dev.waterPercent + '%';
       if (dev.waterPercent < 15) {
@@ -52,6 +53,8 @@ function initDashboard(container) {
       }
     }
     if (pctDisplay) pctDisplay.textContent = dev.waterPercent + '%';
+  } else {
+    if (pctDisplay) pctDisplay.textContent = '—%';
   }
   // Update status info
   container.querySelector('#dash-online').textContent = dev.online ? 'En línea' : 'Desconectado';
@@ -180,10 +183,12 @@ export function render(container, deviceId) {
     if (autoSwitch) autoSwitch.disabled = !isOnline;
   }
 
-  // Listen for telemetry updates
+  // Listen for telemetry updates - refresh entire dashboard when telemetry arrives
   listen('telemetry', (data) => {
     if (data.device_id !== state.selectedId) return;
-    updateTelemetry(data);
+    // Telemetry updates state.allDevices via app.js global listener
+    // Re-initialize dashboard to show the new data
+    initDashboard(container);
     enableSwitchesIfOnline(container);
   });
 
@@ -207,16 +212,7 @@ export function render(container, deviceId) {
 
   // Listen for device_status to update online/offline in real time
   listen('device_status', (data) => {
-    if (data.device_id !== state.selectedId) return;
-    // Update the device in state so initDashboard() returns fresh data
-    const devices = state.allDevices || state.devices || [];
-    const idx = devices.findIndex(d => d.id === data.device_id);
-    if (idx >= 0) {
-      devices[idx].online = !!data.is_online;
-      if (data.rssi !== undefined) devices[idx].rssi = data.rssi;
-      if (data.ip) devices[idx].ip = data.ip;
-      if (data.firmware) devices[idx].firmware_version = data.firmware;
-    }
+    // app.js global listener already updated state.allDevices
     // Refresh the entire dashboard with updated state
     initDashboard(container);
   });

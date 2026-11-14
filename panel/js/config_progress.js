@@ -1,5 +1,7 @@
 /* Config Progress — Ventana modal de progreso al guardar configuración del dispositivo */
 
+import { on, off } from '../ws.js';
+
 let _overlay = null;
 let _window = null;
 let _statusIcon = null;
@@ -65,38 +67,36 @@ export function showConfigProgress(deviceId) {
     setStatus('⏳', 'Enviando al backend...', `Dispositivo: ${deviceId}`);
     _acceptBtn.style.display = 'none';
 
-    // Listen for the result event
-    const offFn = import('../ws.js').then(mod => {
-      const handler = (data) => {
-        if (data.device_id !== deviceId) return;
+    // Listen for the result event — static import, no delay
+    const handler = (data) => {
+      if (data.device_id !== deviceId) return;
 
-        if (data.ok) {
-          setStatus('✅', 'Configuración aplicada exitosamente', `El dispositivo ${deviceId} recibió y aplicó la configuración.`);
+      if (data.ok) {
+        setStatus('✅', 'Configuración aplicada exitosamente', `El dispositivo ${deviceId} recibió y aplicó la configuración.`);
+      } else {
+        const errorMsg = data.error || 'desconocido';
+        let userMsg = '';
+        if (errorMsg === 'device_offline') {
+          userMsg = 'El dispositivo no está conectado. La configuración se guardó en el servidor y se aplicará cuando el dispositivo se reconecte.';
+        } else if (errorMsg === 'timeout') {
+          userMsg = 'El dispositivo no respondió a tiempo. La configuración se guardó en el servidor y se intentará enviar cuando el dispositivo esté disponible.';
         } else {
-          const errorMsg = data.error || 'desconocido';
-          let userMsg = '';
-          if (errorMsg === 'device_offline') {
-            userMsg = 'El dispositivo no está conectado. La configuración se guardó en el servidor y se aplicará cuando el dispositivo se reconecte.';
-          } else if (errorMsg === 'timeout') {
-            userMsg = 'El dispositivo no respondió a tiempo. La configuración se guardó en el servidor y se intentará enviar cuando el dispositivo esté disponible.';
-          } else {
-            userMsg = `Error: ${errorMsg}`;
-          }
-          setStatus('⚠️', 'No se pudo enviar al dispositivo', userMsg);
+          userMsg = `Error: ${errorMsg}`;
         }
+        setStatus('⚠️', 'No se pudo enviar al dispositivo', userMsg);
+      }
 
-        showAccept();
+      showAccept();
 
-        // Bind accept button
-        const acceptHandler = () => {
-          mod.off('update_device_config_result', handler);
-          hide();
-          resolve({ ok: data.ok, error: data.error || '' });
-        };
-        _acceptBtn.addEventListener('click', acceptHandler);
+      // Bind accept button
+      const acceptHandler = () => {
+        off('update_device_config_result', handler);
+        hide();
+        resolve({ ok: data.ok, error: data.error || '' });
       };
-      mod.on('update_device_config_result', handler);
-    });
+      _acceptBtn.addEventListener('click', acceptHandler);
+    };
+    on('update_device_config_result', handler);
 
     // Timeout fallback: if no response in 15s, show as failed
     setTimeout(() => {

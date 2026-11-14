@@ -26,6 +26,7 @@ async def authorize_device(
     return {
         "id": device.id,
         "name": device.name,
+        "location": device.location,
         "status": device.status,
         "owner_id": device.owner_id,
     }, None
