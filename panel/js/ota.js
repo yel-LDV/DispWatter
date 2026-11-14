@@ -1,6 +1,7 @@
 /* OTA firmware versions */
 
 import { socket, on } from './ws.js';
+import { state } from './state.js';
 
 export function initOta() {
     const view = document.getElementById('view-ota');
@@ -95,7 +96,7 @@ async function startOtaUpdate(version) {
             offError();
             resolve({ ok: false, error: data.message });
         });
-        socket.send({ event: 'start_ota_update', version });
+        socket.send({ event: 'start_ota_update', device_id: state.selectedId, version });
         setTimeout(() => { offProgress(); offError(); resolve({ ok: false, error: 'timeout' }); }, 120000);
     });
 

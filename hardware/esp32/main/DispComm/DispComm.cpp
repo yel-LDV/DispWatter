@@ -307,6 +307,13 @@ void DispComm::_handleCommand(JsonDocument& doc) {
         ack(requestId, true);
         return;
     }
+    if (command == "menu_close") {
+        if (_menuCloseCb) {
+            _menuCloseCb();
+        }
+        ack(requestId, true);
+        return;
+    }
     ack(requestId, false, "unknown_command");
 }
 

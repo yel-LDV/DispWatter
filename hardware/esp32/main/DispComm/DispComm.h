@@ -28,6 +28,8 @@ typedef std::function<void(uint8_t* data, size_t len)> OtaChunkCallback;
 typedef std::function<void()> OtaCompleteCallback;
 // Bloqueo remoto de un botón físico por su ID.
 typedef std::function<void(uint8_t buttonId, bool locked)> ButtonLockCallback;
+// Cerrar menú de ajustes remotamente desde el panel.
+typedef std::function<void()> MenuCloseCallback;
 
 class DispComm {
 public:
@@ -53,6 +55,7 @@ public:
     void onOtaChunk(OtaChunkCallback cb) { _otaChunkCb = cb; }
     void onOtaComplete(OtaCompleteCallback cb) { _otaCompleteCb = cb; }
     void onButtonLock(ButtonLockCallback cb) { _buttonLockCb = cb; }
+    void onMenuClose(MenuCloseCallback cb) { _menuCloseCb = cb; }
     bool isWsConnected() const { return _wsConnected; }
     bool isAuthenticated() const { return _state == AuthState::Authenticated; }
     bool isPendingClaim() const { return _state == AuthState::PendingClaim; }
@@ -103,6 +106,7 @@ private:
     OtaChunkCallback _otaChunkCb;
     OtaCompleteCallback _otaCompleteCb;
     ButtonLockCallback _buttonLockCb;
+    MenuCloseCallback _menuCloseCb;
 };
 
 #endif // DISP_COMM_H

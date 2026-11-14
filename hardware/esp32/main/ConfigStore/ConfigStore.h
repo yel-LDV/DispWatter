@@ -44,6 +44,9 @@ struct DeviceConfig {
     //   -1 = no definida en el JSON -> se usa RELE_ACTIVE_LOW_DEFAULT (config.h)
     //    1 = activo en LOW, 0 = activo en HIGH
     int8_t relayActiveLow = -1;
+
+    // Actualización automática de firmware
+    bool autoUpdate = false;
 };
 
 /**
@@ -68,6 +71,10 @@ public:
     bool hasPassword(const String& ssid) const;
 
     String networksJson() const;
+
+    // Modificadores de configuración con guardado automático
+    void setOverflowProtection(bool value);
+    void setAutoUpdate(bool value);
 
 private:
     DeviceConfig _cfg;
