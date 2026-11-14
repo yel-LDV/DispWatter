@@ -563,7 +563,12 @@ async def _handle_verify_claim(user: dict, websocket, data: dict, request_id: Op
             websocket,
             {"event": "claim_verified", "request_id": request_id, "message": message, "device_id": device_id},
         )
+        # Broadcast sync to ALL panels so the newly claimed device appears immediately
         await _broadcast_sync()
+        # Also send device_status so panels update real-time status
+        await server_state.broadcast_to_panels(
+            {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": True}
+        )
     else:
         await send_error(websocket, request_id, "claim_error", message)
 
@@ -602,6 +607,12 @@ async def _handle_update_device_config(user: dict, websocket, data: dict, reques
         min_relay_off = float(cfg_data.get("min_relay_off_min", 3.0))
         overflow_protection = bool(cfg_data.get("overflow_protection", True))
         menu_lock = bool(cfg_data.get("menu_lock", False))
+        wifi_lock = bool(cfg_data.get("wifi_lock", False))
+        device_lock = bool(cfg_data.get("device_lock", False))
+        pump_lock = bool(cfg_data.get("pump_lock", False))
+        sensor_lock = bool(cfg_data.get("sensor_lock", False))
+        firmware_lock = bool(cfg_data.get("firmware_lock", False))
+        security_lock = bool(cfg_data.get("security_lock", False))
     except (TypeError, ValueError):
         await send_error(websocket, request_id, "invalid_params", "Valores numéricos inválidos")
         return
@@ -658,6 +669,12 @@ async def _handle_update_device_config(user: dict, websocket, data: dict, reques
         tc.min_relay_off_min = min_relay_off
         tc.overflow_protection = overflow_protection
         tc.menu_lock = menu_lock
+        tc.wifi_lock = wifi_lock
+        tc.device_lock = device_lock
+        tc.pump_lock = pump_lock
+        tc.sensor_lock = sensor_lock
+        tc.firmware_lock = firmware_lock
+        tc.security_lock = security_lock
 
         await session.commit()
 
@@ -683,6 +700,12 @@ async def _handle_update_device_config(user: dict, websocket, data: dict, reques
                     "min_relay_off_min": min_relay_off,
                     "overflow_protection": overflow_protection,
                     "menu_lock": menu_lock,
+                    "wifi_lock": wifi_lock,
+                    "device_lock": device_lock,
+                    "pump_lock": pump_lock,
+                    "sensor_lock": sensor_lock,
+                    "firmware_lock": firmware_lock,
+                    "security_lock": security_lock,
                 },
                 "request_id": request_id,
             },
@@ -696,6 +719,52 @@ async def _handle_update_device_config(user: dict, websocket, data: dict, reques
         details=f"name={name} location={location} capacity={capacity} bottom={bottom} mirror={mirror} min={min_level} max={max_level} auto={auto_refill} min_off={min_relay_off} overflow={overflow_protection} menu_lock={menu_lock}",
     )
     await _broadcast_sync()
+
+
+async def _handle_get_device_config(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Get fresh device config from DB for a specific device."""
+    device_id = str(data.get("device_id") or "")
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+
+    # Get fresh data from DB
+    cfg = await db_service.get_tank_config(device_id)
+    cfg_dict = {
+        "capacity": cfg.capacity_liters if cfg else 50.0,
+        "bottom_dist_mm": cfg.bottom_dist_mm if cfg else 900.0,
+        "mirror_dist_mm": cfg.mirror_dist_mm if cfg else 100.0,
+        "min_level": cfg.min_level_percent if cfg else 25.0,
+        "max_level": cfg.max_level_percent if cfg else 90.0,
+        "auto_refill": cfg.auto_refill if cfg else True,
+        "min_relay_off_min": cfg.min_relay_off_min if cfg else 3.0,
+        "overflow_protection": cfg.overflow_protection if cfg else True,
+        "menu_lock": cfg.menu_lock if cfg else False,
+        "wifi_lock": cfg.wifi_lock if cfg else False,
+        "device_lock": cfg.device_lock if cfg else False,
+        "pump_lock": cfg.pump_lock if cfg else False,
+        "sensor_lock": cfg.sensor_lock if cfg else False,
+        "firmware_lock": cfg.firmware_lock if cfg else False,
+        "security_lock": cfg.security_lock if cfg else False,
+    }
+
+    await send_to_panel(
+        websocket,
+        {
+            "event": "device_config_result",
+            "request_id": request_id,
+            "ok": True,
+            "device_id": device_id,
+            "name": device.name or "",
+            "location": device.location or "",
+            "config": cfg_dict,
+        },
+    )
 
 
 async def _handle_update_config(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
@@ -1386,6 +1455,8 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_start_ota_update(user, websocket, data, request_id)
         elif event == "change_password":
             await _handle_change_password(user, websocket, data, request_id)
+        elif event == "get_device_config":
+            await _handle_get_device_config(user, websocket, data, request_id)
         elif event == "get_granular_permissions":
             await _handle_get_granular_permissions(user, websocket, data, request_id)
         elif event == "set_permission":

@@ -122,6 +122,13 @@ class TankConfig(Base):
     overflow_protection: Mapped[bool] = mapped_column(Boolean, default=True)
     # Bloqueo del menú de ajustes del ESP32 (Power+Back)
     menu_lock: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Bloqueos individuales de sub-menús del ESP32
+    wifi_lock: Mapped[bool] = mapped_column(Boolean, default=False)
+    device_lock: Mapped[bool] = mapped_column(Boolean, default=False)
+    pump_lock: Mapped[bool] = mapped_column(Boolean, default=False)
+    sensor_lock: Mapped[bool] = mapped_column(Boolean, default=False)
+    firmware_lock: Mapped[bool] = mapped_column(Boolean, default=False)
+    security_lock: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now()
     )
@@ -139,6 +146,12 @@ class TankConfig(Base):
             "min_relay_off_min": self.min_relay_off_min,
             "overflow_protection": self.overflow_protection,
             "menu_lock": self.menu_lock,
+            "wifi_lock": self.wifi_lock,
+            "device_lock": self.device_lock,
+            "pump_lock": self.pump_lock,
+            "sensor_lock": self.sensor_lock,
+            "firmware_lock": self.firmware_lock,
+            "security_lock": self.security_lock,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 

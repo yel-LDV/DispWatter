@@ -21,6 +21,12 @@ TANK_CONFIG_COLUMNS = {
     "min_relay_off_min": "FLOAT NOT NULL DEFAULT 3.0",
     "overflow_protection": "BOOLEAN NOT NULL DEFAULT 1",
     "menu_lock": "BOOLEAN NOT NULL DEFAULT 0",
+    "wifi_lock": "BOOLEAN NOT NULL DEFAULT 0",
+    "device_lock": "BOOLEAN NOT NULL DEFAULT 0",
+    "pump_lock": "BOOLEAN NOT NULL DEFAULT 0",
+    "sensor_lock": "BOOLEAN NOT NULL DEFAULT 0",
+    "firmware_lock": "BOOLEAN NOT NULL DEFAULT 0",
+    "security_lock": "BOOLEAN NOT NULL DEFAULT 0",
 }
 
 DEVICE_COLUMNS = {

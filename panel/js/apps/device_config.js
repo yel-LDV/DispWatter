@@ -1,7 +1,7 @@
 /* Device Config sub-window — Parámetros del dispositivo con guardado/descarte obligatorio */
 
 import { state } from '../state.js';
-import { socket, on } from '../ws.js';
+import { socket, on, off } from '../ws.js';
 import { toast } from '../ui.js';
 import { showModal } from '../modal_dialog.js';
 
@@ -19,23 +19,72 @@ export function render(container, deviceId) {
 
   _deviceId = deviceId;
 
-  // Find device in state
-  const dev = (state.allDevices || state.devices || []).find(d => d.id === deviceId);
-  if (!dev) {
-    container.innerHTML = `
-      <div class="empty-state" style="padding:40px; text-align:center;">
-        <p>Dispositivo no encontrado: ${deviceId}</p>
-      </div>
-    `;
-    return;
-  }
+  // Store window ID for close handler
+  const winEl = container.closest('.window');
+  if (winEl) _windowId = winEl.id;
 
-  const cfg = dev.config || {};
+  // Show loading state while fetching fresh config from backend
+  container.innerHTML = `
+    <div class="section-title">
+      <h2>💧 Parámetros</h2>
+      <span class="section-sub">${deviceId}</span>
+    </div>
+    <div class="empty-state" style="padding:40px; text-align:center;">
+      <p>Cargando configuración...</p>
+    </div>
+  `;
 
+  // Fetch fresh config from backend instead of using cached state
+  fetchDeviceConfig(deviceId, container);
+}
+
+function fetchDeviceConfig(deviceId, container) {
+  // Use socket.request-style: send get_device_config and wait for response
+  const requestId = `cfg_${Date.now()}`;
+  
+  // Listen for the response
+  const responseFn = (data) => {
+    if (data.request_id !== requestId) return;
+    off('device_config_result', responseFn);
+    
+    if (!data.ok) {
+      container.innerHTML = `
+        <div class="section-title">
+          <h2>💧 Parámetros</h2>
+          <span class="section-sub">${deviceId}</span>
+        </div>
+        <div class="empty-state" style="padding:40px; text-align:center;">
+          <p>Error al cargar configuración</p>
+        </div>
+      `;
+      return;
+    }
+
+    renderConfigForm(container, deviceId, data.name, data.location, data.config);
+  };
+  on('device_config_result', responseFn);
+
+  // Send request
+  socket.send({ event: 'get_device_config', device_id: deviceId, request_id: requestId });
+
+  // Timeout fallback: if no response in 5s, use cached state
+  setTimeout(() => {
+    const dev = (state.allDevices || state.devices || []).find(d => d.id === deviceId);
+    if (!dev) return;
+    // Check if we already got a response
+    const existingForm = container.querySelector('#cfgName');
+    if (existingForm) return; // Already rendered
+    off('device_config_result', responseFn);
+    const cfg = dev.config || {};
+    renderConfigForm(container, deviceId, dev.name || '', dev.location || '', cfg);
+  }, 5000);
+}
+
+function renderConfigForm(container, deviceId, name, location, cfg) {
   // Store original values for comparison
   _originalValues = {
-    name: dev.name || '',
-    location: dev.location || '',
+    name: name || '',
+    location: location || '',
     capacity: cfg.capacity || 50,
     bottom: cfg.bottom_dist_mm || 900,
     mirror: cfg.mirror_dist_mm || 100,
@@ -47,14 +96,10 @@ export function render(container, deviceId) {
     menuLock: cfg.menu_lock,
   };
 
-  // Store window ID for close handler
-  const winEl = container.closest('.window');
-  if (winEl) _windowId = winEl.id;
-
   container.innerHTML = `
     <div class="section-title">
       <h2>💧 Parámetros</h2>
-      <span class="section-sub">${dev.name || deviceId}</span>
+      <span class="section-sub">${name || deviceId}</span>
     </div>
 
     <!-- General section -->
@@ -62,11 +107,11 @@ export function render(container, deviceId) {
       <h3 class="card-title">General</h3>
       <div class="form-group">
         <label class="form-label">Nombre del dispositivo</label>
-        <input type="text" class="form-input" id="cfgName" value="${dev.name || ''}" maxlength="128" placeholder="Bebedero Principal">
+        <input type="text" class="form-input" id="cfgName" value="${name || ''}" maxlength="128" placeholder="Bebedero Principal">
       </div>
       <div class="form-group">
         <label class="form-label">Ubicación</label>
-        <input type="text" class="form-input" id="cfgLocation" value="${dev.location || ''}" maxlength="128" placeholder="Granero">
+        <input type="text" class="form-input" id="cfgLocation" value="${location || ''}" maxlength="128" placeholder="Granero">
       </div>
     </div>
 

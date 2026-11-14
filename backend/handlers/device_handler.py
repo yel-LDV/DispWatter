@@ -55,6 +55,12 @@ async def _send_pending_config(device_id: str) -> None:
                     "min_relay_off_min": cfg.min_relay_off_min,
                     "overflow_protection": cfg.overflow_protection,
                     "menu_lock": cfg.menu_lock,
+                    "wifi_lock": cfg.wifi_lock,
+                    "device_lock": cfg.device_lock,
+                    "pump_lock": cfg.pump_lock,
+                    "sensor_lock": cfg.sensor_lock,
+                    "firmware_lock": cfg.firmware_lock,
+                    "security_lock": cfg.security_lock,
                 },
             },
         )

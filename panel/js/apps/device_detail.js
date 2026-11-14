@@ -25,6 +25,8 @@ export function render(container, deviceId) {
     return;
   }
 
+  const cfg = dev.config || {};
+
   container.innerHTML = `
     <div class="section-title">
       <h2>${dev.name || deviceId}</h2>
@@ -39,6 +41,68 @@ export function render(container, deviceId) {
         <div class="status-row"><span class="status-label">Ubicación</span><span class="status-value">${dev.location || '—'}</span></div>
         <div class="status-row"><span class="status-label">IP</span><span class="status-value mono">${dev.ip || '—'}</span></div>
       </div>
+
+      <!-- Menu lock section -->
+      <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border);">
+        <h3 class="card-title" style="font-size:14px; margin-bottom:12px;">🔒 Bloqueo de menús (ESP32)</h3>
+        <div class="form-group form-group-switch">
+          <label class="form-label">Bloquear menú general</label>
+          <label class="switch">
+            <input type="checkbox" class="menu-lock-switch" data-lock="menu_lock" ${cfg.menu_lock ? 'checked' : ''}>
+            <span class="switch-slider"></span>
+          </label>
+          <small class="form-hint">Impide abrir el menú de ajustes con Power+Back.</small>
+        </div>
+        <div class="form-group form-group-switch">
+          <label class="form-label">Bloquear WiFi</label>
+          <label class="switch">
+            <input type="checkbox" class="menu-lock-switch" data-lock="wifi_lock" ${cfg.wifi_lock ? 'checked' : ''}>
+            <span class="switch-slider"></span>
+          </label>
+          <small class="form-hint">Bloquea la sección de WiFi en el menú.</small>
+        </div>
+        <div class="form-group form-group-switch">
+          <label class="form-label">Bloquear dispositivo</label>
+          <label class="switch">
+            <input type="checkbox" class="menu-lock-switch" data-lock="device_lock" ${cfg.device_lock ? 'checked' : ''}>
+            <span class="switch-slider"></span>
+          </label>
+          <small class="form-hint">Bloquea reinicio, dormir y reset de fábrica.</small>
+        </div>
+        <div class="form-group form-group-switch">
+          <label class="form-label">Bloquear bomba</label>
+          <label class="switch">
+            <input type="checkbox" class="menu-lock-switch" data-lock="pump_lock" ${cfg.pump_lock ? 'checked' : ''}>
+            <span class="switch-slider"></span>
+          </label>
+          <small class="form-hint">Bloquea el control manual de la bomba.</small>
+        </div>
+        <div class="form-group form-group-switch">
+          <label class="form-label">Bloquear sensores</label>
+          <label class="switch">
+            <input type="checkbox" class="menu-lock-switch" data-lock="sensor_lock" ${cfg.sensor_lock ? 'checked' : ''}>
+            <span class="switch-slider"></span>
+          </label>
+          <small class="form-hint">Bloquea la calibración del sensor.</small>
+        </div>
+        <div class="form-group form-group-switch">
+          <label class="form-label">Bloquear firmware</label>
+          <label class="switch">
+            <input type="checkbox" class="menu-lock-switch" data-lock="firmware_lock" ${cfg.firmware_lock ? 'checked' : ''}>
+            <span class="switch-slider"></span>
+          </label>
+          <small class="form-hint">Bloquea las actualizaciones de firmware.</small>
+        </div>
+        <div class="form-group form-group-switch">
+          <label class="form-label">Bloquear seguridad</label>
+          <label class="switch">
+            <input type="checkbox" class="menu-lock-switch" data-lock="security_lock" ${cfg.security_lock ? 'checked' : ''}>
+            <span class="switch-slider"></span>
+          </label>
+          <small class="form-hint">Bloquea desvinculación y factory reset.</small>
+        </div>
+      </div>
+
       <div class="btn-row" style="margin-top:16px;">
         <button class="btn btn-primary device-settings" data-id="${dev.id}">⚙ Ajustes</button>
       </div>
@@ -59,6 +123,23 @@ export function render(container, deviceId) {
     if (wm) {
       wm.open('device_settings_hub', { singleInstance: false, _deviceId: dev.id });
     }
+  });
+
+  // Bind menu lock switches — send update_device_config immediately on toggle
+  container.querySelectorAll('.menu-lock-switch').forEach(switchEl => {
+    switchEl.addEventListener('change', () => {
+      const lockKey = switchEl.dataset.lock;
+      const checked = switchEl.checked;
+      // Send menu lock update to backend
+      socket.send({
+        event: 'update_device_config',
+        device_id: dev.id,
+        name: '',
+        location: '',
+        config: { [lockKey]: checked },
+      });
+      toast(`${lockKey.replace('_lock', '')} ${checked ? 'bloqueado' : 'desbloqueado'}`, 'info');
+    });
   });
 
   // Bind action buttons — each opens a blocking modal dialog
