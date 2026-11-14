@@ -77,7 +77,10 @@ function showDesktop() {
   appDrawer.init();
   taskbar.init();
   windowManager._taskbar = taskbar;
-  
+
+  // Expose windowManager globally so lazy-loaded app modules can access it
+  window.__windowManager = windowManager;
+
   // Create fixed notification bell button (absolute, top-right)
   createBellButton();
   initListeners();
