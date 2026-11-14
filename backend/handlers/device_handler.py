@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -11,6 +12,7 @@ from sqlalchemy import select
 from backend.config import settings
 from backend.database.connect import get_db
 from backend.database.models import Device, TankConfig
+from backend.handlers.panel_handler import _broadcast_sync
 from backend.handlers.state import server_state
 from backend.security.auth import (
     record_audit,
@@ -178,6 +180,7 @@ async def _handle_auth(websocket, data: dict) -> None:
                     {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": True}
                 )
                 await _send_pending_config(device_id)
+                asyncio.create_task(_broadcast_sync())
             else:
                 server_state.claim_attempts.pop(device_id, None)
                 future = claim.get("future")
@@ -216,6 +219,7 @@ async def _handle_auth(websocket, data: dict) -> None:
                 {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": False}
             )
             await _send_pending_config(device_id)
+            asyncio.create_task(_broadcast_sync())
             return
 
         # --- Autenticación normal de un dispositivo ya vinculado ---
@@ -244,6 +248,8 @@ async def _handle_auth(websocket, data: dict) -> None:
             {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": device.status == "CLAIMED"}
         )
         await _send_pending_config(device_id)
+        # Broadcast sync to all panels so they receive full device data immediately
+        asyncio.create_task(_broadcast_sync())
 
 
 def _device_authorized(websocket, device_id: str) -> bool:

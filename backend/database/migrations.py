@@ -181,17 +181,17 @@ async def run_migrations() -> None:
             await _meta_set(conn, "users_v2_migrated", "1")
             logger.info("Tabla users actualizada con email e is_verified")
 
-        # --- tank_configs columns ---
+        # --- tank_configs columns (always check, no flag — columns are idempotent) ---
+        existing_tank = await _columns(conn, "tank_configs")
+        for column, ddl in TANK_CONFIG_COLUMNS.items():
+            if column not in existing_tank:
+                await conn.exec_driver_sql(
+                    f"ALTER TABLE tank_configs ADD COLUMN {column} {ddl}"
+                )
+                logger.info("Columna añadida: tank_configs.%s", column)
         if await _meta_get(conn, "tank_config_v2_migrated") != "1":
-            existing_tank = await _columns(conn, "tank_configs")
-            for column, ddl in TANK_CONFIG_COLUMNS.items():
-                if column not in existing_tank:
-                    await conn.exec_driver_sql(
-                        f"ALTER TABLE tank_configs ADD COLUMN {column} {ddl}"
-                    )
-                    logger.info("Columna añadida: tank_configs.%s", column)
             await _meta_set(conn, "tank_config_v2_migrated", "1")
-            logger.info("Tabla tank_configs actualizada con protecciones de bomba")
+        logger.info("Tabla tank_configs actualizada con protecciones de bomba")
 
         # --- New tables ---
         # email_verifications

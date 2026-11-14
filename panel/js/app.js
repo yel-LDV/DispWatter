@@ -1,7 +1,7 @@
 import { initAuth, tryResume } from "./auth.js";
 import { initTheme } from "./theme.js";
 import { initRegister } from "./register.js";
-import { state } from "./state.js";
+import { state, upsertDevice } from "./state.js";
 import { socket, on } from "./ws.js";
 import { el, toast } from "./ui.js";
 import { windowManager } from "./window_manager.js";
@@ -48,6 +48,46 @@ function bindSocket() {
     if (devices.length > 0) {
       state.allDevices = devices;
       state.devices = devices;
+    }
+  });
+
+  // Global telemetry listener: update device telemetry in state for all apps
+  on("telemetry", (data) => {
+    const deviceId = data.device_id;
+    if (!deviceId) return;
+    const devices = state.allDevices;
+    const idx = devices.findIndex(d => d.id === deviceId);
+    if (idx >= 0) {
+      devices[idx].waterPercent = data.water_percent ?? null;
+      devices[idx].waterLiters = data.water_liters ?? null;
+      devices[idx].currentDist = data.distance_mm ?? null;
+      devices[idx].relayState = data.relay_state ?? false;
+      devices[idx].online = true;
+    }
+  });
+
+  // Global device_status listener: update online/offline status in state for all apps
+  on("device_status", (data) => {
+    const deviceId = data.device_id;
+    if (!deviceId) return;
+    const devices = state.allDevices;
+    const idx = devices.findIndex(d => d.id === deviceId);
+    if (idx >= 0) {
+      devices[idx].online = !!data.is_online;
+      if (data.rssi !== undefined) devices[idx].rssi = data.rssi;
+      if (data.ip) devices[idx].ip = data.ip;
+      if (data.firmware) devices[idx].firmware_version = data.firmware;
+    }
+  });
+
+  // Global relay_state listener: update relay state in state for all apps
+  on("relay_state", (data) => {
+    const deviceId = data.device_id;
+    if (!deviceId) return;
+    const devices = state.allDevices;
+    const idx = devices.findIndex(d => d.id === deviceId);
+    if (idx >= 0) {
+      devices[idx].relayState = !!data.relay_state;
     }
   });
 }

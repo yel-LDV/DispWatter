@@ -87,7 +87,9 @@ async def _handle_panel_socket(websocket: WebSocketServerProtocol):
         record_audit("PANEL_CONNECTED", actor=user["username"], details="Sesión WebSocket iniciada")
     )
     try:
-        asyncio.create_task(send_full_sync(websocket))
+        # Send full sync so the panel receives all device data immediately.
+        # Use asyncio.shield to prevent cancellation and keep reference alive.
+        sync_task = asyncio.create_task(send_full_sync(websocket))
         async for message in websocket:
             await handle_panel_message(websocket, message)
     except websockets.exceptions.ConnectionClosed:
