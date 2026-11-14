@@ -93,7 +93,7 @@ async def _handle_auth(websocket, data: dict) -> None:
     wake_reason = str(data.get("wake_reason") or "")
 
     claim = server_state.claim_attempts.get(device_id)
-    claim_nonce = claim["nonce"] if claim else None
+    claim_nonce = claim.get("nonce") if claim else None
 
     async with get_db() as session:
         device = await _ensure_device(session, device_id, name, location, firmware)
