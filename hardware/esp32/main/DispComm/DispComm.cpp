@@ -287,14 +287,26 @@ void DispComm::_handleCommand(JsonDocument& doc) {
         return;
     }
     if (command == "reboot") {
-        ack(requestId, true); delay(300); if (_rebootCb) _rebootCb(); return;
+        ack(requestId, true);
+        sendGoodbye("reboot");
+        delay(300);
+        if (_rebootCb) _rebootCb();
+        return;
     }
     if (command == "sleep") {
         const uint16_t minutes = doc["minutes"] | 60;
-        ack(requestId, true); delay(300); if (_sleepCb) _sleepCb(minutes); return;
+        ack(requestId, true);
+        sendGoodbye("sleep");
+        delay(300);
+        if (_sleepCb) _sleepCb(minutes);
+        return;
     }
     if (command == "factory_reset") {
-        ack(requestId, true); delay(300); if (_factoryResetCb) _factoryResetCb(); return;
+        ack(requestId, true);
+        sendGoodbye("factory_reset");
+        delay(300);
+        if (_factoryResetCb) _factoryResetCb();
+        return;
     }
     if (command == "button_lock") {
         const uint8_t buttonId = (uint8_t)(doc["button_id"] | 0);
@@ -346,6 +358,16 @@ void DispComm::sendPing() {
     doc["event"] = "ping";
     doc["device_id"] = _config.get().deviceId;
     _sendJson(doc);
+}
+
+void DispComm::sendGoodbye(const String& reason) {
+    if (!_wsConnected) return;
+    DynamicJsonDocument doc(256);
+    doc["event"] = "goodbye";
+    doc["device_id"] = _config.get().deviceId;
+    doc["reason"] = reason;
+    _sendJson(doc);
+    Serial.printf("[WS] Goodbye enviado: %s\n", reason.c_str());
 }
 
 void DispComm::sendDeviceStatus() {

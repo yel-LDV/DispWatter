@@ -39,6 +39,7 @@ public:
     void update();
     bool sendTelemetry(float distanceMm, bool relayState);
     void sendPing();
+    void sendGoodbye(const String& reason);  // "reboot", "sleep", "factory_reset"
     void sendDeviceStatus();
     void ack(const String& requestId, bool ok, const String& error = "");
     void ackRelay(const String& requestId, bool relayState);

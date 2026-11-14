@@ -1,19 +1,31 @@
-# DispWatter - Monitoreo de Agua con ESP32
+# DispWatter — Monitoreo de Agua con ESP32
 
-Sistema de monitoreo de nivel de agua con ESP32, panel web y actualizaciones OTA.
+Sistema IoT para el monitoreo y control de bebederos de ganado con ESP32, panel web en tiempo real y actualizaciones de firmware OTA.
 
-## Caracteristicas
+## Capturas de pantalla
 
-- Monitoreo de nivel de agua en tiempo real con sensor ultrasonico HC-SR04
-- Control remoto de bomba via panel web
-- Actualizaciones de firmware OTA (Over-The-Air)
-- Sistema de usuarios con registro y verificacion por email
-- Permisos granulares por dispositivo
-- Historial de telemetria con graficas
-- Configuracion del LCD desde el panel
-- Temas claro y oscuro
+**Panel de control — Dashboard**
 
-## Instalacion
+![Dashboard](images/DashBoard.png)
+
+**Arquitectura del sistema**
+
+![Sistema](images/System.png)
+
+## Características
+
+- **Monitoreo en tiempo real** del nivel de agua con sensor ultrasónico HC-SR04
+- **Control remoto** de bomba y relé a través del panel web
+- **Actualizaciones OTA** (Over-The-Air) del firmware del ESP32
+- **Sistema de usuarios** con registro y verificación por email
+- **Permisos granulares** por dispositivo y rol
+- **Historial de telemetría** con gráficas de nivel, volumen y distancia
+- **Configuración del LCD** desde el panel web
+- **Parámetros de tanque**: capacidad, distancias, niveles mínimo/máximo, relleno automático
+- **Bloqueos de seguridad**: menú, WiFi, dispositivo, bomba, sensor, firmware
+- **Temas claro y oscuro**
+
+## Instalación
 
 ### Backend
 
@@ -23,11 +35,19 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Editar .env con credenciales
+# Editar .env con credenciales de base de datos y admin
 python main.py
 ```
 
 ### Panel Web
+
+El panel se sirve automáticamente junto con el backend en el puerto `3000`. También se puede servir de forma independiente:
+
+```bash
+python panel_server.py
+```
+
+O con un servidor estático simple:
 
 ```bash
 python -m http.server 3000 --directory panel
@@ -37,26 +57,36 @@ python -m http.server 3000 --directory panel
 
 ```bash
 cd hardware/esp32/main
-pio run -e esp32dev
-pio run -e esp32dev --upload
+pio run -e esp32dev          # Compilar
+pio run -e esp32dev --upload # Flashear
+```
+
+O usar el script `flash.sh` en la raíz del proyecto:
+
+```bash
+./flash.sh                          # Compilar y flashear código local
+./flash.sh --version v1.0.0         # Flashear una versión desde GitHub
+./flash.sh --list-versions          # Listar versiones disponibles
 ```
 
 ## Actualizaciones OTA
 
-Las actualizaciones se compilan automaticamente con GitHub Actions. Desde el panel:
+Las actualizaciones se compilan automáticamente con GitHub Actions. Desde el panel:
 
-1. Navega a la seccion OTA
-2. Selecciona una version disponible
-3. Presiona "Actualizar"
-4. En el ESP32, presiona el boton OK para confirmar
+1. Abre **Detalle del dispositivo**
+2. Haz clic en **Actualizar firmware** para ver las versiones disponibles
+3. Selecciona la versión y presiona **Instalar**
+4. En el ESP32, presiona el botón **OK** para confirmar
 
-## Botones Fisicos
+## Botones Físicos
 
-- **OK + Arriba (2s)**: Modo OTA
-- **OK + Abajo (2s)**: Modo downgrade
-- **OK + Izquierda**: Volver al modo normal
-- **OK (corto)**: Confirmar accion
-- **OK (largo)**: Cambiar modo
+| Combinación | Acción |
+|---|---|
+| **OK + Arriba (2s)** | Entrar en modo OTA |
+| **OK + Abajo (2s)** | Entrar en modo downgrade |
+| **OK + Izquierda** | Volver al modo normal |
+| **OK (corto)** | Confirmar acción |
+| **OK (largo)** | Cambiar modo |
 
 ## Pruebas
 
@@ -64,9 +94,11 @@ Las actualizaciones se compilan automaticamente con GitHub Actions. Desde el pan
 ./test.sh --all --save results
 ```
 
-## Documentacion
+## Documentación
 
-- [Circuito](docs/circuit.md) - Diagrama de conexiones
-- [Montaje](docs/assembly.md) - Guia de ensamblaje
-- [OTA](docs/ota.md) - Guia de actualizaciones
-- [Botones](docs/buttons.md) - Guia de navegacion
+- [Arquitectura](ARQUITECTURA.md) — Diseño general del sistema
+- [Circuito](docs/circuit.md) — Diagrama de conexiones del hardware
+- [Montaje](docs/assembly.md) — Guía de ensamblaje
+- [OTA](docs/ota.md) — Guía de actualizaciones de firmware
+- [Botones](docs/buttons.md) — Guía de navegación del menú LCD
+- [Cambios](CAMBIOS.md) — Registro de cambios del proyecto

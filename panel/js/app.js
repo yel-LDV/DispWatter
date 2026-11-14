@@ -73,10 +73,30 @@ function bindSocket() {
     const devices = state.allDevices;
     const idx = devices.findIndex(d => d.id === deviceId);
     if (idx >= 0) {
+      const wasOnline = devices[idx].online;
       devices[idx].online = !!data.is_online;
       if (data.rssi !== undefined) devices[idx].rssi = data.rssi;
       if (data.ip) devices[idx].ip = data.ip;
       if (data.firmware) devices[idx].firmware_version = data.firmware;
+
+      // When device disconnects, clear telemetry values so the panel shows null/—
+      if (!data.is_online && wasOnline) {
+        const reason = data.reason || "disconnect";
+        devices[idx].waterPercent = null;
+        devices[idx].waterLiters = null;
+        devices[idx].currentDist = null;
+        devices[idx].relayState = false;
+        devices[idx].disconnectReason = reason;
+        // Show a toast for graceful disconnects
+        const reasonLabels = {
+          reboot: "Reiniciando",
+          sleep: "Entrando en reposo",
+          factory_reset: "Restableciendo fábrica",
+          heartbeat_timeout: "Sin respuesta",
+          disconnect: "Desconectado"
+        };
+        toast(`${devices[idx].name || deviceId}: ${reasonLabels[reason] || "Desconectado"}`, "warning");
+      }
     }
   });
 

@@ -23,7 +23,7 @@ const MIN_WIDTH = 400;
 const MIN_HEIGHT = 300;
 
 /* Lazy-load app modules with caching */
-const CACHE_BUST = 'v=2025111407';
+const CACHE_BUST = 'v=2025111413';
 const appLoaders = {
   dashboard:            { loader: () => import(`./apps/dashboard.js?${CACHE_BUST}`), module: null },
   devices:              { loader: () => import(`./apps/devices.js?${CACHE_BUST}`), module: null },

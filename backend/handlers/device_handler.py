@@ -348,6 +348,7 @@ async def _handle_telemetry(websocket, data: dict) -> None:
         except Exception:
             logger.exception("Error limpiando telemetría vieja")
 
+    from datetime import datetime
     server_state.telemetry_cache[device_id] = {
         "distance_mm": distance_mm,
         "percent": round(percent, 1),
@@ -355,6 +356,7 @@ async def _handle_telemetry(websocket, data: dict) -> None:
         "height_mm": round(water_height, 1),
         "relay_state": relay_state,
         "updated_at": time.time(),
+        "last_seen": datetime.utcnow(),
     }
 
     # Valores para la pantalla LCD del dispositivo (la distancia la mide el propio ESP32).
@@ -513,5 +515,21 @@ async def handle_device_message(websocket, raw_message: str) -> None:
         await _handle_device_status(websocket, data)
     elif event == "ping":
         await _send(websocket, {"event": "pong", "device_id": device_id})
+        # Update last_seen on heartbeat for heartbeat monitor
+        from datetime import datetime
+        cached = server_state.telemetry_cache.get(device_id)
+        if cached is not None:
+            cached["last_seen"] = datetime.utcnow()
+        async with get_db() as session:
+            dev = await _get_device(session, device_id)
+            if dev:
+                dev.last_seen = datetime.utcnow()
+                await session.commit()
+    elif event == "goodbye":
+        reason = str(data.get("reason") or "").strip()
+        # Store the goodbye reason so main.py can log it when the socket closes
+        from backend.main import _goodbye_reasons
+        _goodbye_reasons[device_id] = reason or "unknown"
+        logger.info("[DISPOSITIVO] %s envió goodbye: %s", device_id, reason or "unknown")
     else:
         logger.debug("Evento de dispositivo no manejado: %s", event)

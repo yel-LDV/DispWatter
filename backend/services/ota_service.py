@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -112,18 +113,37 @@ async def get_version(version_tag: str) -> Optional[dict[str, Any]]:
 
 async def download_binary(version_tag: str) -> Optional[bytes]:
     asset_url = await _get_firmware_url(version_tag)
-    if not asset_url:
-        logger.error("No firmware binary found for %s", version_tag)
+    if asset_url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(asset_url) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+                    logger.error("Download failed for %s: HTTP %d", version_tag, resp.status)
+        except Exception as exc:
+            logger.error("Download error for %s: %s", version_tag, exc)
+
+    # Fallback: usar el firmware compilado localmente
+    logger.info("No binary in GitHub release %s, trying local build", version_tag)
+    binary = await _get_local_firmware()
+    if binary:
+        logger.info("Using local firmware.bin (%d bytes)", len(binary))
+        return binary
+
+    logger.error("No firmware binary found for %s (GitHub or local)", version_tag)
+    return None
+
+
+async def _get_local_firmware() -> Optional[bytes]:
+    """Read the locally compiled firmware.bin from the PlatformIO build directory."""
+    firmware_path = Path(__file__).resolve().parent.parent.parent / "hardware" / "esp32" / "main" / ".pio" / "build" / "esp32dev" / "firmware.bin"
+    if not firmware_path.exists():
+        logger.warning("Local firmware.bin not found at %s", firmware_path)
         return None
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(asset_url) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                logger.error("Download failed for %s: HTTP %d", version_tag, resp.status)
-                return None
-    except Exception as exc:
-        logger.error("Download error for %s: %s", version_tag, exc)
+        return firmware_path.read_bytes()
+    except OSError as exc:
+        logger.error("Failed to read local firmware.bin: %s", exc)
         return None
 
 
@@ -141,35 +161,78 @@ async def verify_binary(binary: bytes, version_tag: str) -> bool:
 
 
 async def push_to_device(
-    websocket: Any,
+    device_websocket: Any,
     version_tag: str,
+    progress_callback: Optional[Any] = None,
     chunk_size: int = 4096,
 ) -> bool:
+    """Push firmware to device via device_websocket. Returns True on success.
+    
+    progress_callback: optional async callback(status, **kwargs) called during push.
+    """
     binary = await download_binary(version_tag)
     if not binary:
-        await _send_ota_event(websocket, "ota_error", {"message": "Download failed"})
+        logger.error("No firmware binary for %s", version_tag)
+        if progress_callback:
+            await progress_callback("error", error="Download failed")
         return False
     if not await verify_binary(binary, version_tag):
-        await _send_ota_event(websocket, "ota_error", {"message": "Checksum verification failed"})
+        logger.error("Checksum verification failed for %s", version_tag)
+        if progress_callback:
+            await progress_callback("error", error="Checksum verification failed")
         return False
+
     total = len(binary)
-    await _send_ota_event(websocket, "ota_start", {
+    logger.info("Starting OTA push: %d bytes in chunks of %d", total, chunk_size)
+
+    if progress_callback:
+        await progress_callback("pushing", progress=0, total=total)
+
+    # Send ota_start to device
+    await _send_ota_event(device_websocket, "ota_start", {
         "version": version_tag.lstrip("v"),
         "size": total,
     })
+    logger.info("Sent ota_start to device")
+
     offset = 0
+    chunks_per_progress = 50
+    chunk_count = 0
+    chunks_per_delay = 100  # yield every N chunks to let device process
     while offset < total:
         chunk = binary[offset:offset + chunk_size]
-        await _send_ota_event(websocket, "ota_chunk", {
-            "data": chunk.hex(),
-            "offset": offset,
-            "total": total,
-        })
+        try:
+            await _send_ota_event(device_websocket, "ota_chunk", {
+                "data": chunk.hex(),
+                "offset": offset,
+                "total": total,
+            })
+        except Exception as exc:
+            logger.error("Failed to send OTA chunk at offset %d: %s", offset, exc)
+            if progress_callback:
+                await progress_callback("error", error="Device disconnected during transfer")
+            return False
         offset += len(chunk)
-    await _send_ota_event(websocket, "ota_complete", {
+        chunk_count += 1
+        if chunk_count % chunks_per_progress == 0:
+            progress = int((offset / total) * 100)
+            logger.info("OTA progress: %d%% (%d/%d bytes)", progress, offset, total)
+            if progress_callback:
+                await progress_callback("pushing", progress=progress, total=total)
+        # Yield to event loop periodically so the device can process chunks
+        if chunk_count % chunks_per_delay == 0:
+            await asyncio.sleep(0.01)
+
+    logger.info("All chunks sent, sending ota_complete")
+    await _send_ota_event(device_websocket, "ota_complete", {
         "version": version_tag.lstrip("v"),
         "size": total,
     })
+    logger.info("ota_complete sent to device")
+    
+    if progress_callback:
+        await progress_callback("verifying", progress=100, total=total)
+    
     return True
 
 

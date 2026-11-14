@@ -47,6 +47,8 @@ Uso: ./flash.sh [opciones]
 
 Opciones:
   --build-only        Compila el firmware sin subirlo.
+  --version TAG       Flashea una versión específica desde GitHub (ej: v1.0.0).
+  --list-versions     Muestra las versiones disponibles en GitHub y sale.
   --non-interactive   Usa device_config.json tal cual, sin preguntas
                       (conserva la config del ESP32 salvo --reset-config).
   --reset-config      Fuerza la subida de data/config.json al ESP32.
@@ -57,6 +59,11 @@ Por defecto:
   - La primera vez crea hardware/esp32/main/device_config.json.
   - Las siguientes veces pregunta si se conserva la config del ESP32.
   - Las redes WiFi se guardan en orden de prioridad (la primera manda).
+
+Ejemplos:
+  ./flash.sh                      Compila y flashea el código local.
+  ./flash.sh --version v1.0.0     Flashea la versión v1.0.0 desde GitHub.
+  ./flash.sh --list-versions      Lista las versiones disponibles.
 EOF
 }
 
@@ -64,10 +71,14 @@ BUILD_ONLY=0
 NON_INTERACTIVE=0
 RESET_CONFIG=0
 FRESH=0
+FLASH_VERSION=""
+LIST_VERSIONS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --build-only) BUILD_ONLY=1 ;;
+        --version) FLASH_VERSION="$2"; shift ;;
+        --list-versions) LIST_VERSIONS=1 ;;
         --non-interactive) NON_INTERACTIVE=1 ;;
         --reset-config) RESET_CONFIG=1 ;;
         --fresh) FRESH=1 ;;
@@ -97,6 +108,107 @@ check_dependencies() {
     [ -f "$CONFIG_HELPER" ] || die "No se encuentra $CONFIG_HELPER"
 }
 
+# ------------------------------------------------------------------------------
+# GitHub Releases — obtener versiones y descargar firmware
+# ------------------------------------------------------------------------------
+GITHUB_REPO="yel-LDV/DispWatter"
+
+list_github_versions() {
+    local json_data=""
+    if command -v gh >/dev/null 2>&1; then
+        json_data=$(gh release list --repo "$GITHUB_REPO" --limit 50 --json tagName,publishedAt,isPrerelease 2>/dev/null)
+    else
+        json_data=$(curl -s "https://api.github.com/repos/$GITHUB_REPO/releases?per_page=50" 2>/dev/null)
+    fi
+    [ -z "$json_data" ] && return
+    echo "$json_data" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for r in data:
+    tag = r.get('tagName', r.get('tag_name', ''))
+    date = ''
+    pa = r.get('publishedAt', r.get('published_at', ''))
+    if pa:
+        date = pa[:10]
+    pre = '1' if r.get('isPrerelease', r.get('prerelease', False)) else '0'
+    print(f'{tag}|{date}|{pre}|github')
+" 2>/dev/null
+}
+
+download_firmware_for_version() {
+    local version="$1"
+    local output_dir="$2"
+    local firmware_file=""
+
+    echo "" >&2
+    info "-> Descargando firmware $version desde GitHub..." >&2
+
+    # Buscar el archivo .bin en el release
+    if command -v gh >/dev/null 2>&1; then
+        gh release download "$version" --repo "$GITHUB_REPO" --pattern '*.bin' --dir "$output_dir" >/dev/null 2>&1
+        firmware_file=$(find "$output_dir" -name '*.bin' -type f 2>/dev/null | head -1)
+        if [ -z "$firmware_file" ]; then
+            # Intentar descargar todos los assets
+            gh release download "$version" --repo "$GITHUB_REPO" --dir "$output_dir" >/dev/null 2>&1
+            firmware_file=$(find "$output_dir" -name '*.bin' -type f 2>/dev/null | head -1)
+        fi
+    else
+        # Usar curl para descargar
+        local assets
+        assets=$(curl -s "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$version" 2>/dev/null)
+        local bin_url
+        bin_url=$(echo "$assets" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for a in data.get('assets', []):
+    if a['name'].endswith('.bin'):
+        print(a['browser_download_url'])
+        break
+" 2>/dev/null)
+        if [ -n "$bin_url" ]; then
+            local bin_name
+            bin_name=$(basename "$bin_url")
+            curl -sL -o "$output_dir/$bin_name" "$bin_url"
+            firmware_file="$output_dir/$bin_name"
+        fi
+    fi
+
+    # Si no encontró .bin, buscar cualquier archivo del release
+    if [ -z "$firmware_file" ] || [ ! -f "$firmware_file" ]; then
+        die "No se encontró archivo .bin en el release $version"
+    fi
+
+    echo "$firmware_file"
+}
+
+# ------------------------------------------------------------------------------
+# Flash desde binario (sin compilar)
+# ------------------------------------------------------------------------------
+flash_from_binary() {
+    local firmware_file="$1"
+    local serial_port="$2"
+
+    echo ""
+    info "-> Flasheando firmware desde binario..."
+    info "  Archivo: $firmware_file"
+    info "  Puerto: $serial_port"
+
+    # Detectar el offset del firmware (por defecto 0x10000 para ESP32)
+    local offset="0x10000"
+
+    # Usar esptool.py para flashear
+    if command -v esptool >/dev/null 2>&1; then
+        esptool.py --port "$serial_port" write_flash "$offset" "$firmware_file"
+    elif command -v pio >/dev/null 2>&1; then
+        # Usar PlatformIO para flashear el binario
+        pio run -d "$PIO_PROJECT" --target upload --upload-port "$serial_port" --upload-file "$firmware_file"
+    else
+        die "Se requiere esptool.py o PlatformIO para flashear desde binario"
+    fi
+
+    ok "Firmware flasheado exitosamente."
+}
+
 detect_ports() {
     local -a ports=()
     while IFS= read -r port; do
@@ -121,6 +233,62 @@ echo -e "${BLUE}${BOLD}      DISPWATTER - CONFIGURACIÓN Y FLASHEO DEL ESP32    
 echo -e "${BLUE}================================================================${NC}\n"
 
 check_dependencies
+
+# ------------------------------------------------------------------------------
+# Modo: listar versiones
+# ------------------------------------------------------------------------------
+if [ "$LIST_VERSIONS" -eq 1 ]; then
+    echo -e "${BOLD}Versiones disponibles en GitHub:${NC}\n"
+    local_versions=$(list_github_versions)
+    if [ -z "$local_versions" ]; then
+        warn "No se pudieron obtener las versiones (verifica conexión a Internet)."
+        exit 1
+    fi
+    echo "$local_versions" | while IFS='|' read -r tag date prerelease author; do
+        [ -z "$tag" ] && continue
+        type_mark=""
+        if [ "$prerelease" = "1" ]; then
+            type_mark=" ${YELLOW}(experimental)${NC}"
+        fi
+        echo -e "  ${GREEN}${tag}${NC}  ${CYAN}${date}${NC}  ${author}${type_mark}"
+    done
+    echo ""
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# Modo: flashear versión desde GitHub
+# ------------------------------------------------------------------------------
+if [ -n "$FLASH_VERSION" ]; then
+    echo -e "${BOLD}Flasheando versión: ${GREEN}${FLASH_VERSION}${NC}${BOLD} desde GitHub${NC}\n"
+
+    # Descargar el firmware
+    TMP_DIR=$(mktemp -d)
+    trap "rm -rf '$TMP_DIR'" EXIT
+    FIRMWARE_FILE=$(download_firmware_for_version "$FLASH_VERSION" "$TMP_DIR")
+
+    # Puerto serie
+    mapfile -t DETECTED_PORTS < <(detect_ports)
+    DEFAULT_PORT="/dev/ttyUSB0"
+    if [ ${#DETECTED_PORTS[@]} -gt 0 ]; then
+        DEFAULT_PORT="${DETECTED_PORTS[0]}"
+        echo -e "  Puertos detectados: ${GREEN}${DETECTED_PORTS[*]}${NC}"
+    fi
+    read -rp "  Puerto para flashear [$DEFAULT_PORT]: " INPUT_PORT
+    SERIAL_PORT="${INPUT_PORT:-$DEFAULT_PORT}"
+    validate_serial_port "$SERIAL_PORT"
+
+    # Flashear
+    flash_from_binary "$FIRMWARE_FILE" "$SERIAL_PORT"
+    log_audit "FLASH_GITHUB_VERSION" "Version=$FLASH_VERSION Port=$SERIAL_PORT File=$FIRMWARE_FILE"
+
+    echo -e "\n${GREEN}================================================================${NC}"
+    echo -e "${GREEN}${BOLD}       FIRMWARE ${FLASH_VERSION} FLASHEADO EXITOSAMENTE              ${NC}"
+    echo -e "${GREEN}================================================================${NC}"
+    echo -e "  Versión:     ${GREEN}${FLASH_VERSION}${NC}"
+    echo -e "  Puerto:      ${GREEN}${SERIAL_PORT}${NC}\n"
+    exit 0
+fi
 
 DETECTED_IP="$(detect_ip)"
 HAD_CONFIG=0

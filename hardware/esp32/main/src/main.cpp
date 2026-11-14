@@ -208,13 +208,18 @@ void onConnectionStatus(bool isConnected) {
 void onReboot() {
     relay.forceOff();
     Serial.println("[SYS] Reinicio solicitado desde el panel");
+    comm.sendGoodbye("reboot");
     Serial.flush();
-    delay(100);
+    delay(300);
     ESP.restart();
 }
 
 void onSleep(uint16_t minutes) {
     relay.forceOff();
+    comm.sendGoodbye("sleep");
+    Serial.println("[SYS] Deep sleep solicitado desde el panel");
+    Serial.flush();
+    delay(300);
     power.sleepForMinutes(minutes);
 }
 
@@ -222,8 +227,9 @@ void onFactoryReset() {
     relay.forceOff();
     configStore.factoryReset();
     Serial.println("[SYS] Reset de fabrica solicitado desde el panel");
+    comm.sendGoodbye("factory_reset");
     Serial.flush();
-    delay(100);
+    delay(300);
     ESP.restart();
 }
 
@@ -266,13 +272,17 @@ void onMenuExecute(int menuId, int itemId) {
                 case DEVICE_REBOOT:
                     relay.forceOff();
                     Serial.println("[MENU] Reinicio desde menu");
+                    comm.sendGoodbye("reboot");
                     Serial.flush();
-                    delay(100);
+                    delay(300);
                     ESP.restart();
                     break;
                 case DEVICE_SLEEP:
                     relay.forceOff();
                     Serial.println("[MENU] Deep sleep desde menu");
+                    comm.sendGoodbye("sleep");
+                    Serial.flush();
+                    delay(300);
                     power.sleepForMinutes(60);
                     break;
             }
@@ -304,8 +314,9 @@ void onMenuExecute(int menuId, int itemId) {
                     relay.forceOff();
                     configStore.factoryReset();
                     Serial.println("[MENU] Factory reset desde menu");
+                    comm.sendGoodbye("factory_reset");
                     Serial.flush();
-                    delay(100);
+                    delay(300);
                     ESP.restart();
                     break;
                 case SEC_UNLINK:

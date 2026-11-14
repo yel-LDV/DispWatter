@@ -181,8 +181,8 @@ private:
     int _randomTextIndex = 0;
 
     static const unsigned long COMBO_HOLD_MS = 5000;
-    static const unsigned long BLINK_DURATION_MS = 3000;
-    static const unsigned long BLINK_INTERVAL_MS = 300;
+    static const unsigned long BLINK_DURATION_MS = 6000;
+    static const unsigned long BLINK_INTERVAL_MS = 600;
 
     // ------------------------------------------------------------------
     // Timeout de inactividad
@@ -198,7 +198,7 @@ private:
     String _scrollText;
     int _scrollPos = 0;
     unsigned long _lastScroll = 0;
-    static const unsigned long SCROLL_INTERVAL_MS = 300;
+    static const unsigned long SCROLL_INTERVAL_MS = 600;
     static const int MENU_LCD_COLS = 16;
 
     // ------------------------------------------------------------------

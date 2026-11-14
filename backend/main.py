@@ -3,6 +3,7 @@ import logging
 import signal
 import sys
 from datetime import datetime
+from typing import Any, Dict
 from urllib.parse import urlparse
 
 import websockets
@@ -33,6 +34,9 @@ logging.basicConfig(
 logger = logging.getLogger("DispWatter.Main")
 
 
+_goodbye_reasons: Dict[str, str] = {}  # device_id -> reason from last goodbye
+
+
 async def _handle_device_socket(websocket: WebSocketServerProtocol):
     logger.info("[ROUTER] Nueva conexión de hardware desde %s", websocket.remote_address)
     try:
@@ -43,6 +47,11 @@ async def _handle_device_socket(websocket: WebSocketServerProtocol):
     finally:
         device_id = server_state.unregister_device_socket(websocket)
         if device_id:
+            reason = _goodbye_reasons.pop(device_id, "")
+            if reason:
+                logger.info("[DISPOSITIVO] %s se ha despedido: %s", device_id, reason)
+            else:
+                logger.info("[DISPOSITIVO] %s desconectado (sin despedida)", device_id)
             try:
                 await db_service.update_device_online(device_id, is_online=False)
             except Exception:
@@ -57,10 +66,10 @@ async def _handle_device_socket(websocket: WebSocketServerProtocol):
             await server_state.broadcast_to_panels(
                 {"event": "relay_state", "device_id": device_id, "relay_state": False, "source": "disconnect"}
             )
-            await record_audit("DEVICE_DISCONNECTED", device_id=device_id)
-            logger.info("[DISPOSITIVO] %s desconectado", device_id)
+            await record_audit("DEVICE_DISCONNECTED", device_id=device_id, details=f"reason={reason}" if reason else None)
+            # Notify panels with disconnect reason so they can show null values
             await server_state.broadcast_to_panels(
-                {"event": "device_status", "device_id": device_id, "is_online": False}
+                {"event": "device_status", "device_id": device_id, "is_online": False, "reason": reason or "disconnect"}
             )
 
 
@@ -113,6 +122,41 @@ async def router(websocket: WebSocketServerProtocol, path: str):
         await websocket.close(1000, "Ruta no soportada")
 
 
+async def _heartbeat_monitor():
+    """Periodically check if devices are still alive via last_seen timestamp.
+    
+    If a device hasn't sent a ping/telemetry in 90 seconds, mark it offline.
+    The ESP32 sends ping every 30s, so 90s = 3 missed pings.
+    """
+    from datetime import datetime, timedelta
+    
+    while True:
+        await asyncio.sleep(30)
+        now = datetime.utcnow()
+        stale_threshold = now - timedelta(seconds=90)
+        
+        for device_id, ws in list(server_state.device_sockets.items()):
+            last_seen = server_state.telemetry_cache.get(device_id, {}).get("last_seen")
+            if last_seen is not None and isinstance(last_seen, datetime):
+                if last_seen < stale_threshold:
+                    logger.warning("[HEARTBEAT] Dispositivo %s sin respuesta (>90s), marcando offline", device_id)
+                    try:
+                        await db_service.update_device_online(device_id, is_online=False)
+                    except Exception:
+                        pass
+                    cached = server_state.telemetry_cache.get(device_id)
+                    if cached:
+                        cached["relay_state"] = False
+                    await server_state.broadcast_to_panels(
+                        {"event": "device_status", "device_id": device_id, "is_online": False, "reason": "heartbeat_timeout"}
+                    )
+                    # Close the stale connection
+                    try:
+                        await ws.close(1001, "Heartbeat timeout")
+                    except Exception:
+                        pass
+
+
 async def main():
     logger.info("==========================================")
     logger.info("   INICIANDO DISPWATTER BACKEND SERVER    ")
@@ -130,6 +174,9 @@ async def main():
     loop = asyncio.get_running_loop()
     worker_pool.start(loop)
 
+    # Start heartbeat monitor to detect stale device connections
+    asyncio.create_task(_heartbeat_monitor())
+
     stop_event = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -142,6 +189,8 @@ async def main():
         settings.HOST,
         settings.PORT,
         max_size=settings.MAX_MESSAGE_SIZE * 20,
+        ping_interval=30,
+        ping_timeout=120,
     ):
         logger.info("Servidor WebSocket escuchando en ws://%s:%s", settings.HOST, settings.PORT)
         logger.info(" -> Hardware ESP32: ws://%s:%s/ws/device", settings.HOST, settings.PORT)

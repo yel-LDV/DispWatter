@@ -51,8 +51,8 @@ private:
     // Config
     String _line0Format = "percent";
     String _line1Format = "liters";
-    int _scrollSpeed = 200;
-    int _scrollPause = 3;
+    int _scrollSpeed = 400;
+    int _scrollPause = 6;
     String _distanceUnit = "cm";
     String _customText0;
     String _customText1;

@@ -1339,7 +1339,7 @@ async def _handle_start_ota_update(user: dict, websocket, data: dict, request_id
         await send_error(websocket, request_id, "not_found", f"Version {version_tag} no encontrada")
         return
 
-    device_ws = server_state.device_socket(device_id)
+    device_ws = server_state.device_sockets.get(device_id)
     if not device_ws:
         await send_error(websocket, request_id, "device_offline", "No se pudo conectar al dispositivo")
         return
@@ -1349,24 +1349,42 @@ async def _handle_start_ota_update(user: dict, websocket, data: dict, request_id
         {"event": "ota_progress", "request_id": request_id, "status": "downloading", "version": version_tag},
     )
 
+    async def _progress(status, **kwargs):
+        try:
+            await send_to_panel(websocket, {
+                "event": "ota_progress",
+                "request_id": request_id,
+                "status": status,
+                "version": version_tag,
+                **kwargs,
+            })
+        except Exception:
+            logger.debug("Panel WebSocket closed during OTA progress update")
+
     try:
-        success = await push_to_device(device_ws, version_tag)
-        if success:
-            await send_to_panel(
-                websocket,
-                {"event": "ota_progress", "request_id": request_id, "status": "complete", "version": version_tag},
-            )
-            await record_audit(
-                "OTA_UPDATE",
-                device_id=device_id,
-                actor=user.get("username", "USER"),
-                details=f"version={version_tag}",
-            )
-        else:
-            await send_error(websocket, request_id, "ota_error", "La actualización falló")
+        success = await push_to_device(device_ws, version_tag, progress_callback=_progress)
+        try:
+            if success:
+                await send_to_panel(
+                    websocket,
+                    {"event": "ota_progress", "request_id": request_id, "status": "complete", "version": version_tag},
+                )
+                await record_audit(
+                    "OTA_UPDATE",
+                    device_id=device_id,
+                    actor=user.get("username", "USER"),
+                    details=f"version={version_tag}",
+                )
+            else:
+                await send_error(websocket, request_id, "ota_error", "La actualización falló")
+        except Exception:
+            logger.debug("Panel WebSocket closed before sending OTA result")
     except Exception:
         logger.exception("OTA update failed")
-        await send_error(websocket, request_id, "ota_error", "Error durante la actualización")
+        try:
+            await send_error(websocket, request_id, "ota_error", "Error durante la actualización")
+        except Exception:
+            logger.debug("Panel WebSocket closed before sending OTA error")
 
 
 # ---------------------------------------------------------------------------
