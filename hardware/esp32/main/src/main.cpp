@@ -565,30 +565,68 @@ void setup() {
     });
     comm.onConfigUpdate([](const String& jsonConfig) {
         // Parse config update from backend and apply to ConfigStore
-        DynamicJsonDocument doc(512);
+        DynamicJsonDocument doc(1024);
         DeserializationError err = deserializeJson(doc, jsonConfig);
         if (err) {
             Serial.printf("[CONFIG] Error parseando config: %s\n", err.c_str());
             return;
         }
+        bool changed = false;
         if (doc.containsKey("menu_lock")) {
             configStore.setMenuLock(doc["menu_lock"] | false);
             Serial.printf("[CONFIG] menu_lock=%d\n", configStore.get().menuLock);
+            changed = true;
         }
         if (doc.containsKey("overflow_protection")) {
             configStore.setOverflowProtection(doc["overflow_protection"] | true);
+            changed = true;
         }
         if (doc.containsKey("auto_update")) {
             configStore.setAutoUpdate(doc["auto_update"] | false);
+            changed = true;
         }
         if (doc.containsKey("min_relay_off_min")) {
             configStore.setMinRelayOffMin(doc["min_relay_off_min"] | 3);
+            changed = true;
+        }
+        // Individual menu locks
+        if (doc.containsKey("wifi_lock")) {
+            configStore.setWifiLock(doc["wifi_lock"] | false);
+            Serial.printf("[CONFIG] wifi_lock=%d\n", configStore.get().wifiLock);
+            changed = true;
+        }
+        if (doc.containsKey("device_lock")) {
+            configStore.setDeviceLock(doc["device_lock"] | false);
+            Serial.printf("[CONFIG] device_lock=%d\n", configStore.get().deviceLock);
+            changed = true;
+        }
+        if (doc.containsKey("pump_lock")) {
+            configStore.setPumpLock(doc["pump_lock"] | false);
+            Serial.printf("[CONFIG] pump_lock=%d\n", configStore.get().pumpLock);
+            changed = true;
+        }
+        if (doc.containsKey("sensor_lock")) {
+            configStore.setSensorLock(doc["sensor_lock"] | false);
+            Serial.printf("[CONFIG] sensor_lock=%d\n", configStore.get().sensorLock);
+            changed = true;
+        }
+        if (doc.containsKey("firmware_lock")) {
+            configStore.setFirmwareLock(doc["firmware_lock"] | false);
+            Serial.printf("[CONFIG] firmware_lock=%d\n", configStore.get().firmwareLock);
+            changed = true;
+        }
+        if (doc.containsKey("security_lock")) {
+            configStore.setSecurityLock(doc["security_lock"] | false);
+            Serial.printf("[CONFIG] security_lock=%d\n", configStore.get().securityLock);
+            changed = true;
         }
         // Tank parameters (capacity, bottom_dist_mm, mirror_dist_mm, min_level,
         // max_level, auto_refill) are stored in the backend TankConfig table and
         // used for telemetry calculations. The ESP32 does not persist them in
         // /config.json; they are applied at runtime via the backend sync.
-        Serial.println("[CONFIG] Configuración actualizada desde el panel");
+        if (changed) {
+            Serial.println("[CONFIG] Configuración actualizada desde el panel");
+        }
     });
     comm.begin();
     ota.begin();

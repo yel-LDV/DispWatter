@@ -383,3 +383,33 @@ void ConfigStore::setMinRelayOffMin(uint16_t value) {
     _cfg.minRelayOffMin = value;
     save();
 }
+
+void ConfigStore::setWifiLock(bool value) {
+    _cfg.wifiLock = value;
+    save();
+}
+
+void ConfigStore::setDeviceLock(bool value) {
+    _cfg.deviceLock = value;
+    save();
+}
+
+void ConfigStore::setPumpLock(bool value) {
+    _cfg.pumpLock = value;
+    save();
+}
+
+void ConfigStore::setSensorLock(bool value) {
+    _cfg.sensorLock = value;
+    save();
+}
+
+void ConfigStore::setFirmwareLock(bool value) {
+    _cfg.firmwareLock = value;
+    save();
+}
+
+void ConfigStore::setSecurityLock(bool value) {
+    _cfg.securityLock = value;
+    save();
+}

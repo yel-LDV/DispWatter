@@ -49,6 +49,13 @@ struct DeviceConfig {
     bool autoUpdate = false;
     // Bloqueo del menú de ajustes (Power+Back)
     bool menuLock = false;
+    // Bloqueos individuales de sub-menús
+    bool wifiLock = false;
+    bool deviceLock = false;
+    bool pumpLock = false;
+    bool sensorLock = false;
+    bool firmwareLock = false;
+    bool securityLock = false;
 };
 
 /**
@@ -79,6 +86,12 @@ public:
     void setAutoUpdate(bool value);
     void setMenuLock(bool value);
     void setMinRelayOffMin(uint16_t value);
+    void setWifiLock(bool value);
+    void setDeviceLock(bool value);
+    void setPumpLock(bool value);
+    void setSensorLock(bool value);
+    void setFirmwareLock(bool value);
+    void setSecurityLock(bool value);
 
 private:
     DeviceConfig _cfg;
