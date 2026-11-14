@@ -57,6 +57,29 @@ def _client_ip(websocket) -> str:
         return "unknown"
 
 
+async def _do_login(username: str, password: str) -> dict:
+    """Execute login directly as async DB query (no worker pool overhead)."""
+    from backend.services import db_service
+    from backend.security.auth import verify_password
+
+    user = await db_service.get_user_by_username(username)
+    if user is None or not user.is_active or not verify_password(user.password_hash, password):
+        return {"ok": False, "error": "unauthorized"}
+    if not user.is_verified and user.role != "admin":
+        return {"ok": False, "error": "not_verified"}
+    await db_service.update_user_last_login(user.id)
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "is_verified": user.is_verified,
+        },
+    }
+
+
 async def _login(websocket, data: dict) -> Optional[dict]:
     ip = _client_ip(websocket)
     limiter = server_state.login_limiter
@@ -72,7 +95,6 @@ async def _login(websocket, data: dict) -> Optional[dict]:
     password = str(data.get("password") or "")
     if not username or not password:
         limiter.register_failure(ip)
-        await asyncio.sleep(0.25)
         await send_to_panel(
             websocket,
             {"event": "login_result", "ok": False, "error": "unauthorized",
@@ -80,16 +102,15 @@ async def _login(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    # Usar worker para login
+    # Execute login directly (no worker pool overhead)
     try:
-        result = await worker_pool.submit("panel", "login", username=username, password=password)
+        result = await _do_login(username, password)
     except Exception:
-        logger.exception("Error en login worker")
+        logger.exception("Error en login")
         result = {"ok": False, "error": "internal_error"}
 
     if not result.get("ok"):
         limiter.register_failure(ip)
-        await asyncio.sleep(0.35)
         error = result.get("error", "unauthorized")
         if error == "not_verified":
             await send_to_panel(
@@ -113,8 +134,29 @@ async def _login(websocket, data: dict) -> Optional[dict]:
         websocket,
         {"event": "login_result", "ok": True, "token": token, "user": user_info},
     )
-    await record_audit("LOGIN_SUCCESS", actor=user_info["username"], details=f"IP={ip}")
+    asyncio.create_task(record_audit("LOGIN_SUCCESS", actor=user_info["username"], details=f"IP={ip}"))
     return user_info
+
+
+async def _do_resume(user_id: str) -> dict:
+    """Execute resume directly as async DB query (no worker pool overhead)."""
+    from backend.services import db_service
+
+    user = await db_service.get_user_by_id(user_id)
+    if user is None or not user.is_active:
+        return {"ok": False, "error": "unauthorized"}
+    if not user.is_verified and user.role != "admin":
+        return {"ok": False, "error": "not_verified"}
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "is_verified": user.is_verified,
+        },
+    }
 
 
 async def _resume(websocket, data: dict) -> Optional[dict]:
@@ -126,11 +168,11 @@ async def _resume(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    # Usar worker para resume
+    # Execute resume directly (no worker pool overhead)
     try:
-        result = await worker_pool.submit("panel", "resume", user_id=payload["sub"])
+        result = await _do_resume(payload["sub"])
     except Exception:
-        logger.exception("Error en resume worker")
+        logger.exception("Error en resume")
         result = {"ok": False, "error": "internal_error"}
 
     if not result.get("ok"):
@@ -843,6 +885,58 @@ async def _handle_audit(websocket, data: dict, request_id: Optional[str]) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Panel commands: set_auto_refill, device commands, logout
+# ---------------------------------------------------------------------------
+
+async def _handle_set_auto_refill(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Toggle auto_refill for a device."""
+    device_id = str(data.get("device_id") or "")
+    enabled = bool(data.get("enabled", False))
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+    await db_service.update_tank_config(device_id, auto_refill=enabled)
+    await request_device(
+        websocket, user, device_id,
+        {"command": "set_auto_refill", "enabled": enabled, "request_id": request_id},
+    )
+    await send_ack(websocket, request_id, True)
+    await _broadcast_sync()
+
+
+async def _handle_device_command(
+    user: dict, websocket, data: dict, request_id: Optional[str], action: str
+) -> None:
+    """Handle reboot, sleep, factory_reset device commands."""
+    device_id = str(data.get("device_id") or "")
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+    result = await request_device(
+        websocket, user, device_id,
+        {"command": action, "request_id": request_id},
+    )
+    ok = bool(result.get("ok", False))
+    await send_ack(websocket, result.get("request_id", request_id), ok, result.get("error", ""))
+    if ok:
+        await record_audit(
+            f"DEVICE_{action.upper()}", device_id=device_id,
+            actor=user.get("username", "USER"),
+        )
+
+
+async def _handle_panel_logout(websocket) -> None:
+    """Close the panel session."""
+    server_state.unregister_panel(websocket)
+    try:
+        await websocket.close(1000, "logout")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Cambio de contraseña
 # ---------------------------------------------------------------------------
 async def _handle_change_password(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
@@ -1140,6 +1234,20 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_set_all_permissions(user, websocket, data, request_id)
         elif event == "sync":
             await send_full_sync(websocket)
+        elif event == "set_relay":
+            await _handle_relay(user, websocket, data, request_id)
+        elif event == "set_auto_refill":
+            await _handle_set_auto_refill(user, websocket, data, request_id)
+        elif event == "reboot":
+            await _handle_device_command(user, websocket, data, request_id, "reboot")
+        elif event == "sleep":
+            await _handle_device_command(user, websocket, data, request_id, "sleep")
+        elif event == "factory_reset":
+            await _handle_device_command(user, websocket, data, request_id, "factory_reset")
+        elif event == "logout":
+            await _handle_panel_logout(websocket)
+        elif event == "resume":
+            pass
         else:
             await send_error(websocket, request_id, "invalid_params", "Evento no soportado")
     except Exception:

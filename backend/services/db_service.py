@@ -454,26 +454,25 @@ async def update_device_networks(device_id: str, networks: list) -> None:
 
 async def get_all_devices_for_sync() -> List[Dict[str, Any]]:
     """Returns all devices with config and networks for panel sync.
-    Callers must merge telemetry_cache and server_state data."""
+    Uses joinedload to avoid N+1 queries."""
+    from sqlalchemy.orm import joinedload
     from backend.handlers.state import server_state
 
     async with get_db() as session:
-        result = await session.execute(select(Device).order_by(Device.created_at))
-        devices = result.scalars().all()
+        result = await session.execute(
+            select(Device)
+            .options(
+                joinedload(Device.config),
+                joinedload(Device.networks).joinedload(),
+            )
+            .order_by(Device.created_at)
+        )
+        devices = list(result.unique().scalars().all())
 
         device_list = []
         for dev in devices:
-            cfg_res = await session.execute(
-                select(TankConfig).where(TankConfig.device_id == dev.id)
-            )
-            cfg = cfg_res.scalar_one_or_none()
-
-            net_res = await session.execute(
-                select(DeviceNetwork)
-                .where(DeviceNetwork.device_id == dev.id)
-                .order_by(DeviceNetwork.priority)
-            )
-            networks = net_res.scalars().all()
+            cfg = dev.config
+            networks = dev.networks or []
 
             cached = server_state.telemetry_cache.get(dev.id)
             device_list.append(
