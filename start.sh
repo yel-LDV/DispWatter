@@ -66,7 +66,27 @@ if [ -f "$PANEL_PID_FILE" ] && kill -0 "$(cat "$PANEL_PID_FILE")" 2>/dev/null; t
     echo -e "${YELLOW}[AVISO]${NC} El panel web ya está en ejecución (PID: $(cat "$PANEL_PID_FILE"))"
 else
     echo -e "-> Arrancando Servidor de Panel Web en puerto 3000..."
-    python3 -m http.server 3000 --directory "$SCRIPT_DIR/panel" > "$LOGS_DIR/panel.log" 2>&1 &
+    python3 -c "
+import http.server, os, sys
+ROOT = '$SCRIPT_DIR/panel'
+
+class PanelHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=ROOT, **kwargs)
+
+    def end_headers(self):
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
+        super().end_headers()
+
+    def translate_path(self, path):
+        # Strip query params for file lookup
+        path = path.split('?')[0]
+        return super().translate_path(path)
+
+http.server.HTTPServer(("0.0.0.0", 3000), PanelHandler).serve_forever()
+" > "$LOGS_DIR/panel.log" 2>&1 &
     PANEL_PID=$!
     echo "$PANEL_PID" > "$PANEL_PID_FILE"
     sleep 1

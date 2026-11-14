@@ -5,6 +5,7 @@ export const state = {
   token: localStorage.getItem(TOKEN_KEY) || "",
   user: null,
   devices: [],
+  allDevices: [],
   selectedId: localStorage.getItem(DEVICE_KEY) || "",
   connected: false,
   wifi: [],

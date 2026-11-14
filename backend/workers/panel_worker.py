@@ -28,7 +28,9 @@ def handle(action: str, params: Dict[str, Any]) -> Any:
         "get_all_devices": _get_all_devices,
         "update_tank_config": _update_tank_config,
         "get_audit_logs": _get_audit_logs,
+        "add_device": _add_device,
         "delete_device": _delete_device,
+        "release_device": _release_device,
         "get_device": _get_device,
         "update_device_name": _update_device_name,
         "get_tank_config": _get_tank_config,
@@ -46,10 +48,6 @@ async def _login(params: Dict[str, Any]) -> Dict[str, Any]:
     user = await db_service.get_user_by_username(username)
     if user is None or not user.is_active or not verify_password(user.password_hash, password):
         return {"ok": False, "error": "unauthorized"}
-
-    # Check email verification (admin is always verified)
-    if not user.is_verified and user.role != "admin":
-        return {"ok": False, "error": "not_verified"}
 
     await db_service.update_user_last_login(user.id)
     return {
@@ -69,10 +67,6 @@ async def _resume(params: Dict[str, Any]) -> Dict[str, Any]:
     user = await db_service.get_user_by_id(user_id)
     if user is None or not user.is_active:
         return {"ok": False, "error": "unauthorized"}
-    
-    # Check email verification (admin is always verified)
-    if not user.is_verified and user.role != "admin":
-        return {"ok": False, "error": "not_verified"}
     
     return {
         "ok": True,
@@ -114,9 +108,21 @@ async def _get_audit_logs(params: Dict[str, Any]) -> Dict[str, Any]:
     return {"entries": logs}
 
 
+async def _add_device(params: Dict[str, Any]) -> Dict[str, Any]:
+    device_id = params["device_id"]
+    owner_id = params["owner_id"]
+    return await db_service.add_device_manual(device_id, owner_id)
+
+
 async def _delete_device(params: Dict[str, Any]) -> Dict[str, Any]:
     device_id = params["device_id"]
     await db_service.delete_device(device_id)
+    return {"ok": True}
+
+
+async def _release_device(params: Dict[str, Any]) -> Dict[str, Any]:
+    device_id = params["device_id"]
+    await db_service.release_device(device_id)
     return {"ok": True}
 
 

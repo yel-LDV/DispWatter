@@ -165,21 +165,11 @@ async def check_permission(
 
 
 async def get_user_accessible_devices(user_id: str) -> List[str]:
-    """Get all device IDs that a user can access.
-    
-    Includes:
-    - All devices if user is admin
-    - Devices owned by the user
-    - Devices with explicit permissions
-    
-    Returns:
-        List of device IDs.
-    """
+    """Get all device IDs that a user can access."""
     user = await db_service.get_user_by_id(user_id)
     if user is None:
         return []
     
-    # Admin accesses all devices
     if user.role == "admin":
         devices = await db_service.get_all_devices_for_sync()
         return [d["id"] for d in devices]
@@ -189,16 +179,109 @@ async def get_user_accessible_devices(user_id: str) -> List[str]:
     from sqlalchemy import select
     
     async with get_db() as session:
-        # Owned devices
         result = await session.execute(
             select(Device.id).where(Device.owner_id == user_id)
         )
         owned = [row[0] for row in result.all()]
         
-        # Devices with explicit permissions
         result = await session.execute(
             select(DP.device_id).where(DP.user_id == user_id)
         )
         permitted = [row[0] for row in result.all()]
     
     return list(set(owned + permitted))
+
+
+GRANULAR_PERMISSIONS = DevicePermission.GRANULAR_FIELDS
+
+ROLE_GRANULAR_DEFAULTS = {
+    "owner": {
+        "view_telemetry": True, "control_pump": True, "auto_refill": True,
+        "configure_tank": True, "reboot_device": True, "factory_reset": True,
+        "delete_device": True, "view_history": True, "view_audit": True,
+        "ota_update": True, "manage_lcd": True, "change_password": True,
+    },
+    "editor": {
+        "view_telemetry": True, "control_pump": True, "auto_refill": True,
+        "configure_tank": True, "reboot_device": False, "factory_reset": False,
+        "delete_device": False, "view_history": True, "view_audit": False,
+        "ota_update": False, "manage_lcd": True, "change_password": True,
+    },
+    "viewer": {
+        "view_telemetry": True, "control_pump": False, "auto_refill": False,
+        "configure_tank": False, "reboot_device": False, "factory_reset": False,
+        "delete_device": False, "view_history": True, "view_audit": False,
+        "ota_update": False, "manage_lcd": False, "change_password": True,
+    },
+}
+
+
+async def get_granular_permissions(device_id: str, user_id: str) -> Dict[str, bool]:
+    """Get granular permissions for a user on a device."""
+    perm = await db_service.get_device_permission(device_id, user_id)
+    if perm is None:
+        return {field: False for field in GRANULAR_PERMISSIONS}
+    return {
+        field: getattr(perm, field, False) for field in GRANULAR_PERMISSIONS
+    }
+
+
+async def set_permission(
+    device_id: str, user_id: str, permission: str, value: bool
+) -> Tuple[bool, str]:
+    """Set a single granular permission for a user on a device."""
+    if permission not in GRANULAR_PERMISSIONS:
+        return False, f"Permiso inválido. Usa: {', '.join(GRANULAR_PERMISSIONS)}"
+    
+    try:
+        await db_service.set_granular_permission(
+            device_id=device_id,
+            user_id=user_id,
+            permission=permission,
+            value=value,
+        )
+        return True, f"Permiso '{permission}' actualizado"
+    except Exception as e:
+        logger.error("Error setting permission: %s", e)
+        return False, f"Error: {e}"
+
+
+async def set_all_permissions(
+    device_id: str, user_id: str, all_permissions: Dict[str, bool]
+) -> Tuple[bool, str]:
+    """Set all granular permissions for a user on a device (master toggle)."""
+    try:
+        await db_service.set_all_granular_permissions(
+            device_id=device_id,
+            user_id=user_id,
+            permissions=all_permissions,
+        )
+        return True, "Todos los permisos actualizados"
+    except Exception as e:
+        logger.error("Error setting all permissions: %s", e)
+        return False, f"Error: {e}"
+
+
+async def check_granular_permission(
+    user_id: str, device_id: str, permission: str
+) -> bool:
+    """Check if a user has a specific granular permission on a device."""
+    user = await db_service.get_user_by_id(user_id)
+    if user is None:
+        return False
+    
+    if user.role == "admin":
+        return True
+    
+    device = await db_service.get_device(device_id)
+    if device is None:
+        return False
+    
+    if device.owner_id == user_id:
+        return True
+    
+    perm = await db_service.get_device_permission(device_id, user_id)
+    if perm is None:
+        return False
+    
+    return getattr(perm, permission, False)

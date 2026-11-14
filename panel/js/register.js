@@ -1,5 +1,5 @@
 /**
- * Registro de usuarios
+ * Registro de usuarios sin verificación por email
  */
 
 import { socket, on } from './ws.js';
@@ -38,7 +38,7 @@ export function initRegister() {
         try {
             const result = await register(email, password);
             if (result.ok) {
-                successEl.textContent = result.message || 'Cuenta creada. Revisa tu correo para verificar.';
+                successEl.textContent = result.message || 'Cuenta creada. Ya puedes iniciar sesión.';
                 form.reset();
             } else {
                 errorEl.textContent = result.message || 'Error al registrar';
@@ -58,36 +58,4 @@ async function register(email, password) {
         });
         socket.send({ event: 'register', email, password });
     });
-}
-
-// Handle verification result (from URL params)
-export function checkVerificationResult() {
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('token');
-
-    if (!token) return;
-
-    // Remove token from URL
-    window.history.replaceState({}, '', window.location.pathname);
-
-    (async () => {
-        try {
-            await socket.connect();
-            const result = await new Promise((resolve) => {
-                const off = on('verify_result', (data) => {
-                    off();
-                    resolve(data);
-                });
-                socket.send({ event: 'verify_email', token });
-            });
-
-            const msgEl = document.getElementById('verifyMessage');
-            if (msgEl) {
-                msgEl.textContent = result.message || (result.ok ? 'Verificado' : 'Error');
-                msgEl.className = result.ok ? 'success-msg' : 'error-msg';
-            }
-        } catch (err) {
-            console.error('Verification error:', err);
-        }
-    })();
 }

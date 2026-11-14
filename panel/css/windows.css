@@ -1,0 +1,1022 @@
+/* ============================================================
+   Windows OS-style floating windows, app drawer & taskbar
+   ============================================================ */
+
+/* ============================== Desktop ============================== */
+.desktop {
+  min-height: 100vh;
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 48px; /* taskbar height */
+}
+
+.desktop-area {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 48px;
+  overflow: hidden;
+}
+
+/* ============================== Window ============================== */
+.window {
+  position: absolute;
+  min-width: 400px;
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(220, 38, 38, 0.2);
+  backdrop-filter: blur(20px);
+  background: linear-gradient(
+    180deg,
+    rgba(30, 18, 32, 0.92) 0%,
+    rgba(15, 11, 19, 0.96) 100%
+  );
+  transition: box-shadow 0.2s ease;
+}
+
+.window:focus-within,
+.window.active {
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(220, 38, 38, 0.45),
+    0 0 24px rgba(220, 38, 38, 0.15);
+}
+
+/* Tema claro — ventana */
+[data-theme="light"] .window {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.94) 0%,
+    rgba(245, 240, 240, 0.97) 100%
+  );
+}
+
+/* ============================== Titlebar ============================== */
+.window-titlebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  height: 40px;
+  flex-shrink: 0;
+  cursor: grab;
+  user-select: none;
+  background: rgba(220, 38, 38, 0.08);
+  border-bottom: 1px solid rgba(220, 38, 38, 0.15);
+}
+
+.window-titlebar:active {
+  cursor: grabbing;
+}
+
+.window-titlebar-icon {
+  font-size: 14px;
+  opacity: 0.9;
+  width: 18px;
+  text-align: center;
+}
+
+.window-titlebar-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================== Window Controls ============================== */
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.window-control-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.window-control-btn:hover {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--text-0);
+}
+
+.window-control-btn.close:hover {
+  background: rgba(220, 38, 38, 0.85);
+  color: #fff;
+}
+
+/* ============================== Window Content ============================== */
+.window-content {
+  flex: 1;
+  overflow: auto;
+  padding: var(--space-4);
+  color: var(--text-0);
+}
+
+/* ============================== Window States ============================== */
+.window-minimized {
+  display: none !important;
+}
+
+.window-maximized {
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  border-radius: 0;
+}
+
+/* ============================== Resize Handle ============================== */
+.window-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 10;
+}
+
+.window-resize-handle::after {
+  content: "";
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-2);
+  border-bottom: 2px solid var(--text-2);
+  opacity: 0.4;
+}
+
+/* ============================== App Drawer ============================== */
+.app-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 260px;
+  height: 100vh;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-5) var(--space-4);
+  background: linear-gradient(
+    180deg,
+    rgba(30, 18, 32, 0.96) 0%,
+    rgba(10, 5, 8, 0.98) 100%
+  );
+  border-right: 1px solid rgba(220, 38, 38, 0.2);
+  backdrop-filter: blur(24px);
+  box-shadow: 8px 0 40px rgba(0, 0, 0, 0.5);
+  transform: translateX(-100%);
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.app-drawer.open {
+  transform: translateX(0);
+}
+
+.app-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.app-drawer-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-2) var(--space-5);
+  border-bottom: 1px solid rgba(220, 38, 38, 0.15);
+  margin-bottom: var(--space-4);
+}
+
+.app-drawer-header .logo-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: radial-gradient(circle at 30% 20%, rgba(220, 38, 38, 0.4), rgba(239, 68, 68, 0.08));
+  border: 1px solid rgba(220, 38, 38, 0.42);
+  box-shadow: var(--glow-crimson);
+}
+
+.app-drawer-header .logo-mark img {
+  width: 22px;
+  height: 22px;
+}
+
+.app-drawer-header h1 {
+  font-size: 18px;
+  background: linear-gradient(90deg, var(--neon-crimson), var(--crimson-light));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.app-drawer-header .brand-sub {
+  color: var(--text-2);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 1;
+}
+
+.app-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s, color 0.2s;
+  width: 100%;
+  font-size: 14px;
+}
+
+.app-drawer-item:hover {
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--text-0);
+}
+
+.app-drawer-item.active {
+  color: var(--neon-crimson);
+  border-color: rgba(220, 38, 38, 0.2);
+  background: rgba(220, 38, 38, 0.1);
+  box-shadow: inset 0 0 24px rgba(220, 38, 38, 0.06);
+}
+
+.app-drawer-item-icon {
+  width: 20px;
+  text-align: center;
+  font-size: 16px;
+  opacity: 0.9;
+}
+
+.app-drawer-close {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.app-drawer-close:hover {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--text-0);
+}
+
+/* ============================== Drawer Toggle ============================== */
+.drawer-toggle {
+  position: fixed;
+  top: var(--space-4);
+  left: var(--space-4);
+  z-index: 998;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(30, 18, 32, 0.92), rgba(15, 11, 19, 0.96));
+  backdrop-filter: blur(16px);
+  color: var(--text-1);
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.drawer-toggle:hover {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--neon-crimson);
+  border-color: rgba(220, 38, 38, 0.45);
+}
+
+/* ============================== Taskbar ============================== */
+.taskbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-4);
+  gap: var(--space-2);
+  background: linear-gradient(
+    180deg,
+    rgba(15, 11, 19, 0.94) 0%,
+    rgba(10, 5, 8, 0.98) 100%
+  );
+  border-top: 1px solid rgba(220, 38, 38, 0.15);
+  backdrop-filter: blur(20px);
+}
+
+.taskbar-apps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.taskbar-app-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  border: 1px solid rgba(220, 38, 38, 0.15);
+  border-radius: var(--radius-sm);
+  background: rgba(220, 38, 38, 0.06);
+  color: var(--text-1);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.taskbar-app-btn:hover {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--text-0);
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.taskbar-app-btn.active {
+  background: rgba(220, 38, 38, 0.2);
+  color: var(--neon-crimson);
+  border-color: rgba(220, 38, 38, 0.45);
+}
+
+.taskbar-app-btn-icon {
+  font-size: 14px;
+}
+
+.taskbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.taskbar-clock {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.taskbar-connection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.taskbar-connection .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-2);
+}
+
+.taskbar-connection.connected .dot {
+  background: var(--neon-green);
+  box-shadow: 0 0 8px var(--neon-green);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.taskbar-connection.disconnected .dot {
+  background: var(--neon-red);
+  box-shadow: 0 0 8px var(--neon-red);
+}
+
+.taskbar-user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 10px;
+  border: 1px solid rgba(220, 38, 38, 0.15);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.taskbar-user-role {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--neon-crimson);
+}
+
+/* ============================== Animations ============================== */
+@keyframes window-open {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.window {
+  animation: window-open 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.82); }
+}
+
+/* ============================== Responsive ============================== */
+@media (max-width: 900px) {
+  .window {
+    min-width: 320px !important;
+    min-height: 240px !important;
+  }
+
+  .app-drawer {
+    width: 220px;
+  }
+}
+
+@media (max-width: 640px) {
+  .desktop {
+    padding-bottom: 48px;
+  }
+
+  .window {
+    min-width: 280px !important;
+    min-height: 200px !important;
+  }
+
+  .window-maximized {
+    border-radius: 0;
+  }
+
+  .app-drawer {
+    width: 100%;
+  }
+
+  .taskbar-app-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  .taskbar-user {
+    display: none;
+  }
+}
+
+/* ============================== Device Name Link ============================== */
+.device-name-link {
+  color: var(--neon-crimson);
+  text-decoration: none;
+  cursor: pointer;
+  font-weight: 600;
+  transition: color 0.15s, text-decoration 0.15s;
+}
+
+.device-name-link:hover {
+  color: var(--crimson-light);
+  text-decoration: underline;
+}
+
+.device-name-link:focus-visible {
+  outline: 2px solid var(--neon-crimson);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ============================== Modal Dialog Animation ============================== */
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% - 16px)) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* Modal backdrop blocks pointer events on everything below */
+.modal-backdrop {
+  pointer-events: auto;
+}
+
+/* Modal dialog window — always on top */
+.modal-dialog-window {
+  pointer-events: auto;
+}
+
+/* Light theme modal dialog */
+[data-theme="light"] .modal-dialog-window {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 245, 245, 0.99) 100%);
+}
+
+/* ============================== Dashboard Header ============================== */
+.dash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 16px;
+  border-bottom: 1px solid rgba(220, 38, 38, 0.12);
+  margin-bottom: 16px;
+}
+
+.dash-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dash-header-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-0);
+  margin: 0;
+}
+
+.dash-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Device selector */
+.dash-device-select {
+  padding: 6px 32px 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15, 11, 19, 0.8);
+  color: var(--text-0);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23dc2626' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.dash-device-select:hover,
+.dash-device-select:focus {
+  border-color: var(--neon-crimson);
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.15);
+  outline: none;
+}
+
+/* Refresh button */
+.dash-refresh-btn {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 18px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.dash-refresh-btn:hover {
+  border-color: var(--neon-crimson);
+  color: var(--neon-crimson);
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.dash-refresh-btn:active {
+  transform: rotate(180deg);
+}
+
+/* ============================== Fixed Notification Bell ============================== */
+/* Absolute position, top-right corner, above all windows */
+.notif-bell-btn {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 9999;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(30, 18, 32, 0.92) 0%, rgba(15, 11, 19, 0.96) 100%);
+  backdrop-filter: blur(16px);
+  font-size: 20px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.notif-bell-btn:hover {
+  border-color: var(--neon-crimson);
+  background: linear-gradient(180deg, rgba(220, 38, 38, 0.15) 0%, rgba(15, 11, 19, 0.96) 100%);
+  box-shadow: 0 4px 24px rgba(220, 38, 38, 0.2);
+  transform: scale(1.05);
+}
+
+.notif-bell-btn:active {
+  transform: scale(0.95);
+}
+
+/* Light theme fixed bell */
+[data-theme="light"] .notif-bell-btn {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(250, 245, 245, 0.98) 100%);
+}
+
+/* Notification badge on fixed bell */
+.notif-bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--neon-crimson);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.6);
+  border: 2px solid rgba(15, 11, 19, 0.9);
+}
+
+/* ============================== Notification Sidebar ============================== */
+.notif-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+.notif-overlay.notif-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.notif-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(420px, 100vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(30, 18, 32, 0.97) 0%, rgba(15, 11, 19, 0.99) 100%);
+  backdrop-filter: blur(20px);
+  border-left: 1px solid rgba(220, 38, 38, 0.15);
+  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.5);
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.notif-overlay.notif-open .notif-sidebar {
+  transform: translateX(0);
+}
+
+/* Light theme notification sidebar */
+[data-theme="light"] .notif-sidebar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 245, 245, 0.99) 100%);
+}
+
+.notif-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(220, 38, 38, 0.15);
+  flex-shrink: 0;
+}
+
+.notif-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-0);
+  margin: 0;
+}
+
+.notif-close-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.notif-close-btn:hover {
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--neon-crimson);
+}
+
+.notif-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* Empty state */
+.notif-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--text-2);
+}
+
+.notif-empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.notif-empty p {
+  font-size: 14px;
+  margin: 0;
+}
+
+/* Notification item */
+.notif-item {
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.notif-item:hover {
+  background: rgba(220, 38, 38, 0.06);
+  border-color: rgba(220, 38, 38, 0.12);
+}
+
+.notif-unread {
+  background: rgba(220, 38, 38, 0.04);
+  border-color: rgba(220, 38, 38, 0.15);
+}
+
+.notif-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.notif-item-icon {
+  font-size: 18px;
+}
+
+.notif-item-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.notif-item-time {
+  font-size: 11px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+
+/* Red dot for unread */
+.notif-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--neon-crimson);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(220, 38, 38, 0.6);
+}
+
+.notif-item-body {
+  font-size: 13px;
+  color: var(--text-1);
+  line-height: 1.5;
+}
+
+.notif-item-body p {
+  margin: 0 0 4px;
+}
+
+.notif-item-body p:last-child {
+  margin-bottom: 0;
+}
+
+.notif-device-id {
+  font-size: 12px !important;
+  color: var(--text-2) !important;
+}
+
+.notif-item-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+/* Modal input styles */
+.modal-input-wrap {
+  margin-top: 12px;
+}
+
+.modal-input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15, 11, 19, 0.6);
+  color: var(--text-0);
+  font-size: 14px;
+  font-family: var(--font-mono);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.modal-input:focus {
+  border-color: var(--neon-crimson);
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.15);
+  outline: none;
+}
+
+.modal-input::placeholder {
+  color: var(--text-2);
+}
+
+/* ============================== Responsive ============================== */
+@media (max-width: 640px) {
+  .dash-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .dash-header-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .dash-device-select {
+    flex: 1;
+    max-width: 200px;
+  }
+
+  .notif-sidebar {
+    width: 100vw;
+  }
+}
+
+/* ============================================
+   Settings Hub Grid
+   ============================================ */
+
+.settings-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.settings-hub-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  text-align: center;
+}
+
+.settings-hub-card:hover {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.3);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(220, 38, 38, 0.15);
+}
+
+.settings-hub-card:active {
+  transform: translateY(0);
+}
+
+.settings-hub-card:focus-visible {
+  outline: 2px solid var(--neon-crimson);
+  outline-offset: 2px;
+}
+
+.settings-hub-icon {
+  font-size: 36px;
+  line-height: 1;
+}
+
+.settings-hub-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.settings-hub-desc {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+/* Light theme support for hub */
+[data-theme="light"] .settings-hub-card {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .settings-hub-card:hover {
+  background: rgba(220, 38, 38, 0.05);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
+/* Responsive hub */
+@media (max-width: 600px) {
+  .settings-hub-grid {
+    grid-template-columns: 1fr;
+  }
+}

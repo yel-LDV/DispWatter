@@ -30,7 +30,11 @@ export function wsUrl() {
 export function on(event, handler) {
   if (!listeners.has(event)) listeners.set(event, new Set());
   listeners.get(event).add(handler);
-  return () => listeners.get(event)?.delete(handler);
+  return () => off(event, handler);
+}
+
+export function off(event, handler) {
+  listeners.get(event)?.delete(handler);
 }
 
 function emit(event, data) {

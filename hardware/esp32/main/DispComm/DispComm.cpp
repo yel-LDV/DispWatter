@@ -194,6 +194,38 @@ void DispComm::_handleJson(const char* json) {
         if (_claimVerifiedCb) _claimVerifiedCb();
         return;
     }
+    if (event == "ota_start") {
+        const String version = doc["version"] | "";
+        const size_t size = doc["size"] | 0;
+        if (_otaStartCb && version.length() > 0) {
+            _otaStartCb(version, size);
+        }
+        return;
+    }
+    if (event == "ota_chunk") {
+        if (_otaChunkCb && doc.containsKey("data")) {
+            String hexData = doc["data"] | "";
+            size_t len = hexData.length() / 2;
+            if (len > 0) {
+                uint8_t* bytes = new uint8_t[len];
+                for (size_t i = 0; i < len; i++) {
+                    bytes[i] = (uint8_t)strtol(hexData.c_str() + i * 2, nullptr, 16);
+                }
+                _otaChunkCb(bytes, len);
+                delete[] bytes;
+            }
+        }
+        return;
+    }
+    if (event == "ota_complete") {
+        if (_otaCompleteCb) {
+            _otaCompleteCb();
+        }
+        return;
+    }
+    if (event == "ota_error") {
+        return;
+    }
     if (doc.containsKey("command")) {
         _handleCommand(doc);
         return;
@@ -263,6 +295,33 @@ void DispComm::_handleCommand(JsonDocument& doc) {
     }
     if (command == "factory_reset") {
         ack(requestId, true); delay(300); if (_factoryResetCb) _factoryResetCb(); return;
+    }
+    if (command == "button_lock") {
+        const uint8_t buttonId = (uint8_t)(doc["button_id"] | 0);
+        const bool locked = doc["locked"] | false;
+        if (!_buttonLockCb) {
+            ack(requestId, false, "button_lock_unavailable");
+            return;
+        }
+        _buttonLockCb(buttonId, locked);
+        ack(requestId, true);
+        return;
+    }
+    if (command == "menu_close") {
+        if (_menuCloseCb) {
+            _menuCloseCb();
+        }
+        ack(requestId, true);
+        return;
+    }
+    if (command == "update_config") {
+        if (_configUpdateCb && doc.containsKey("config")) {
+            String jsonConfig;
+            serializeJson(doc["config"], jsonConfig);
+            _configUpdateCb(jsonConfig);
+        }
+        ack(requestId, true);
+        return;
     }
     ack(requestId, false, "unknown_command");
 }

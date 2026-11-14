@@ -20,6 +20,7 @@ USER_COLUMNS = {
 TANK_CONFIG_COLUMNS = {
     "min_relay_off_min": "FLOAT NOT NULL DEFAULT 3.0",
     "overflow_protection": "BOOLEAN NOT NULL DEFAULT 1",
+    "menu_lock": "BOOLEAN NOT NULL DEFAULT 0",
 }
 
 DEVICE_COLUMNS = {
@@ -27,6 +28,7 @@ DEVICE_COLUMNS = {
     "last_rssi": "INTEGER",
     "last_ip": "TEXT",
     "wake_reason": "TEXT",
+    "serial_number": "TEXT",
 }
 
 
@@ -234,6 +236,32 @@ async def run_migrations() -> None:
             "FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE)"
         )
         logger.info("Tabla lcd_configs lista")
+
+        # device_permissions granular columns
+        if await _meta_get(conn, "device_permissions_v2_migrated") != "1":
+            GRANULAR_COLS = {
+                "view_telemetry": "BOOLEAN NOT NULL DEFAULT 1",
+                "control_pump": "BOOLEAN NOT NULL DEFAULT 0",
+                "auto_refill": "BOOLEAN NOT NULL DEFAULT 0",
+                "configure_tank": "BOOLEAN NOT NULL DEFAULT 0",
+                "reboot_device": "BOOLEAN NOT NULL DEFAULT 0",
+                "factory_reset": "BOOLEAN NOT NULL DEFAULT 0",
+                "delete_device": "BOOLEAN NOT NULL DEFAULT 0",
+                "view_history": "BOOLEAN NOT NULL DEFAULT 1",
+                "view_audit": "BOOLEAN NOT NULL DEFAULT 0",
+                "ota_update": "BOOLEAN NOT NULL DEFAULT 0",
+                "manage_lcd": "BOOLEAN NOT NULL DEFAULT 0",
+                "change_password": "BOOLEAN NOT NULL DEFAULT 1",
+            }
+            existing_perm = await _columns(conn, "device_permissions")
+            for column, ddl in GRANULAR_COLS.items():
+                if column not in existing_perm:
+                    await conn.exec_driver_sql(
+                        f"ALTER TABLE device_permissions ADD COLUMN {column} {ddl}"
+                    )
+                    logger.info("Columna añadida: device_permissions.%s", column)
+            await _meta_set(conn, "device_permissions_v2_migrated", "1")
+            logger.info("Tabla device_permissions actualizada con toggles granulares")
 
         # telemetry index for history queries
         await conn.exec_driver_sql(

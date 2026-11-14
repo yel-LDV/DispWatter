@@ -359,15 +359,12 @@ export function openClaimModal() {
   form.id = "claimDeviceForm";
 
   const fields = [
-    { id: "claimDeviceId", label: "ID del dispositivo", value: dev?.id || "", type: "text", required: true },
-    { id: "claimDeviceName", label: "Nombre visible", value: dev?.name || "", type: "text", required: false },
-    { id: "claimDevicePass", label: "Secreto del dispositivo", value: "", type: "password", required: true },
+    { id: "claimToken", label: "Token del dispositivo", value: "", type: "text", required: true },
   ];
 
   for (const field of fields) {
     const wrapper = document.createElement("div");
     wrapper.className = "field";
-    if (field.id === "claimDevicePass") wrapper.style.gridColumn = "1 / -1";
     const label = document.createElement("label");
     label.htmlFor = field.id;
     label.textContent = field.label;
@@ -376,8 +373,7 @@ export function openClaimModal() {
     input.type = field.type;
     input.value = field.value;
     input.required = field.required;
-    input.autocomplete = field.type === "password" ? "new-password" : "off";
-    if (field.type === "password") input.minLength = 16;
+    input.placeholder = "Ingresa el token del config.json";
     wrapper.append(label, input);
     form.appendChild(wrapper);
   }
@@ -385,44 +381,143 @@ export function openClaimModal() {
   const hint = document.createElement("p");
   hint.className = "field-hint";
   hint.style.gridColumn = "1 / -1";
-  hint.textContent = "El dispositivo debe estar online. El backend le enviará un challenge y verificará el secreto sin guardarlo en el navegador.";
+  hint.textContent = "El dispositivo debe estar online y pendiente de vinculación. Solo necesitas el token.";
   form.appendChild(hint);
+
+  // Step 2: code input (hidden initially)
+  const codeSection = document.createElement("div");
+  codeSection.id = "claimCodeSection";
+  codeSection.style.gridColumn = "1 / -1";
+  codeSection.style.display = "none";
+
+  const codeLabel = document.createElement("label");
+  codeLabel.textContent = "Código de 6 dígitos del LCD:";
+  codeLabel.style.display = "block";
+  codeLabel.style.marginBottom = "0.5rem";
+
+  const codeInput = document.createElement("input");
+  codeInput.id = "claimCode";
+  codeInput.type = "text";
+  codeInput.maxLength = 6;
+  codeInput.pattern = "[0-9]{6}";
+  codeInput.placeholder = "123456";
+  codeInput.style.fontSize = "1.5rem";
+  codeInput.style.textAlign = "center";
+  codeInput.style.letterSpacing = "0.3em";
+
+  const countdownEl = document.createElement("p");
+  countdownEl.id = "claimCountdown";
+  countdownEl.style.textAlign = "center";
+  countdownEl.style.marginTop = "0.5rem";
+
+  codeSection.append(codeLabel, codeInput, countdownEl);
+  form.appendChild(codeSection);
 
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.className = "btn btn-primary";
-  submit.textContent = "Verificar y vincular";
+  submit.textContent = "Enviar código al dispositivo";
   submit.style.gridColumn = "1 / -1";
   form.appendChild(submit);
 
+  // Enable submit button only when code input has exactly 6 digits
+  const updateSubmitState = () => {
+    if (codeSection.style.display !== "none" && claimDeviceId) {
+      const val = codeInput.value.trim();
+      submit.disabled = val.length !== 6;
+    }
+  };
+  codeInput.addEventListener("input", updateSubmitState);
+
+  let claimDeviceId = null;
+  let countdownInterval = null;
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    submit.disabled = true;
-    submit.textContent = "Verificando…";
-    try {
-      const result = await socket.request({
-        event: "claim_device",
-        device_id: el("claimDeviceId").value.trim(),
-        name: el("claimDeviceName").value.trim(),
-        password: el("claimDevicePass").value,
-      }, 20000);
 
-      if (result.event === "claim_result" && result.status === "success") {
-        toast("Dispositivo vinculado correctamente", "success");
-        closeModal();
-      } else {
-        handleRequestError(result, "No se pudo vincular el dispositivo");
+    if (codeSection.style.display === "none") {
+      // Step 1: send token
+      submit.disabled = true;
+      submit.textContent = "Enviando…";
+      const token = el("claimToken").value.trim();
+      try {
+        const result = await socket.request({
+          event: "start_claim_by_token",
+          token: token,
+        }, 15000);
+
+        if (result.event === "claim_code_sent") {
+          claimDeviceId = result.device_id;
+          toast(result.message || "Código enviado al dispositivo", "success");
+          codeSection.style.display = "block";
+          submit.textContent = "Verificar código";
+          codeInput.value = "";
+          updateSubmitState();  // will disable submit since input is empty
+          codeInput.focus();
+
+          // Start countdown
+          let remaining = 15;
+          countdownEl.textContent = remaining + "s restantes";
+          countdownInterval = setInterval(() => {
+            remaining--;
+            if (remaining <= 0) {
+              clearInterval(countdownInterval);
+              countdownEl.textContent = "Expirado. Solicita un nuevo código.";
+              submit.textContent = "Enviar código al dispositivo";
+              codeSection.style.display = "none";
+              codeInput.value = "";
+              claimDeviceId = null;
+            } else {
+              countdownEl.textContent = remaining + "s restantes";
+            }
+          }, 1000);
+        } else {
+          handleRequestError(result, "No se pudo enviar el código");
+        }
+      } catch (error) {
+        toast(error.message, "error");
+      } finally {
+        if (!claimDeviceId) {
+          submit.disabled = false;
+          submit.textContent = "Enviar código al dispositivo";
+        }
       }
-    } catch (error) {
-      toast(error.message, "error");
-    } finally {
-      submit.disabled = false;
-      submit.textContent = "Verificar y vincular";
+    } else if (claimDeviceId) {
+      // Step 2: verify code
+      submit.disabled = true;
+      submit.textContent = "Verificando…";
+      const code = el("claimCode").value.trim();
+      console.log("[CLAIM] Verifying code:", code, "for device:", claimDeviceId);
+      try {
+        const result = await socket.request({
+          event: "verify_claim",
+          device_id: claimDeviceId,
+          code: code,
+        }, 10000);
+
+        console.log("[CLAIM] Response:", result);
+        if (result.event === "claim_verified") {
+          clearInterval(countdownInterval);
+          toast(result.message || "Dispositivo vinculado", "success");
+          closeModal();
+        } else {
+          handleRequestError(result, "Código incorrecto");
+        }
+      } catch (error) {
+        console.error("[CLAIM] Error:", error);
+        toast(error.message, "error");
+      } finally {
+        submit.textContent = "Verificar código";
+        updateSubmitState();  // re-enable only if 6 digits entered
+      }
     }
   });
 
   openModal("Vincular dispositivo", form, [
-    { label: "Cancelar", className: "btn-ghost", onClick: closeModal },
+    { label: "Cancelar", className: "btn-ghost", onClick: () => {
+      if (countdownInterval) clearInterval(countdownInterval);
+      closeModal();
+    }},
   ]);
 }
 

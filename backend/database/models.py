@@ -53,6 +53,8 @@ class Device(Base):
     name: Mapped[str] = mapped_column(String(128), default="Nuevo Bebedero")
     location: Mapped[str] = mapped_column(String(128), default="Sin ubicación")
     firmware_version: Mapped[str] = mapped_column(String(32), default="1.0.0")
+    # Unique hardware serial (ESP32 MAC-based). Prevents duplicate device_id on flash.
+    serial_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # Puede ser NULL mientras el dispositivo está pendiente de vinculación.
     key_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     owner_id: Mapped[Optional[str]] = mapped_column(
@@ -87,6 +89,7 @@ class Device(Base):
             "name": self.name,
             "location": self.location,
             "firmware_version": self.firmware_version,
+            "serial_number": self.serial_number,
             "owner_id": self.owner_id,
             "status": self.status,
             "is_online": self.is_online,
@@ -117,6 +120,8 @@ class TankConfig(Base):
     min_relay_off_min: Mapped[float] = mapped_column(Float, default=3.0)
     # Protección contra desborde: apagar bomba al superar máximo aunque auto esté off
     overflow_protection: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Bloqueo del menú de ajustes del ESP32 (Power+Back)
+    menu_lock: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now()
     )
@@ -133,6 +138,7 @@ class TankConfig(Base):
             "auto_refill": self.auto_refill,
             "min_relay_off_min": self.min_relay_off_min,
             "overflow_protection": self.overflow_protection,
+            "menu_lock": self.menu_lock,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
@@ -261,10 +267,29 @@ class DevicePermission(Base):
     role: Mapped[str] = mapped_column(
         String(16), nullable=False, default="viewer"
     )  # owner, editor, viewer
+    # Granular boolean toggles
+    view_telemetry: Mapped[bool] = mapped_column(Boolean, default=True)
+    control_pump: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_refill: Mapped[bool] = mapped_column(Boolean, default=False)
+    configure_tank: Mapped[bool] = mapped_column(Boolean, default=False)
+    reboot_device: Mapped[bool] = mapped_column(Boolean, default=False)
+    factory_reset: Mapped[bool] = mapped_column(Boolean, default=False)
+    delete_device: Mapped[bool] = mapped_column(Boolean, default=False)
+    view_history: Mapped[bool] = mapped_column(Boolean, default=True)
+    view_audit: Mapped[bool] = mapped_column(Boolean, default=False)
+    ota_update: Mapped[bool] = mapped_column(Boolean, default=False)
+    manage_lcd: Mapped[bool] = mapped_column(Boolean, default=False)
+    change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     granted_by: Mapped[Optional[str]] = mapped_column(
         String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     granted_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    GRANULAR_FIELDS = [
+        "view_telemetry", "control_pump", "auto_refill", "configure_tank",
+        "reboot_device", "factory_reset", "delete_device", "view_history",
+        "view_audit", "ota_update", "manage_lcd", "change_password",
+    ]
 
     def to_dict(self):
         return {
@@ -272,6 +297,18 @@ class DevicePermission(Base):
             "device_id": self.device_id,
             "user_id": self.user_id,
             "role": self.role,
+            "view_telemetry": self.view_telemetry,
+            "control_pump": self.control_pump,
+            "auto_refill": self.auto_refill,
+            "configure_tank": self.configure_tank,
+            "reboot_device": self.reboot_device,
+            "factory_reset": self.factory_reset,
+            "delete_device": self.delete_device,
+            "view_history": self.view_history,
+            "view_audit": self.view_audit,
+            "ota_update": self.ota_update,
+            "manage_lcd": self.manage_lcd,
+            "change_password": self.change_password,
             "granted_by": self.granted_by,
             "granted_at": self.granted_at.isoformat() if self.granted_at else None,
         }

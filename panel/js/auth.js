@@ -18,16 +18,15 @@ export function initAuth(onAuthenticated) {
 
 function showLogin(message = "") {
   el("loginScreen")?.classList.remove("hidden");
-  el("appShell")?.classList.add("hidden");
+  el("desktop")?.classList.add("hidden");
   const error = el("loginError");
   if (error) error.textContent = message;
 }
 
 function showApp(user) {
+  // El nuevo layout (desktop) se muestra desde app.js.
+  // auth.js solo oculta el login; app.js muestra el desktop.
   el("loginScreen")?.classList.add("hidden");
-  el("appShell")?.classList.remove("hidden");
-  el("userName").textContent = user?.username || "—";
-  el("userRole").textContent = user?.role || "—";
 }
 
 async function submitLogin() {
