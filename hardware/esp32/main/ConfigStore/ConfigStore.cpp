@@ -378,3 +378,8 @@ void ConfigStore::setMenuLock(bool value) {
     _cfg.menuLock = value;
     save();
 }
+
+void ConfigStore::setMinRelayOffMin(uint16_t value) {
+    _cfg.minRelayOffMin = value;
+    save();
+}

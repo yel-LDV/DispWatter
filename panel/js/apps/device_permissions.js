@@ -222,6 +222,16 @@ function discardAndClose(container) {
 export function checkBeforeClose(windowId) {
   // Returns a promise that resolves to true if close is allowed
   return new Promise((resolve) => {
+    if (!_hasChanges) {
+      // No changes, allow close immediately
+      const wm = window.__windowManager;
+      if (wm) {
+        const w = wm.get(windowId);
+        if (w) w._forceClose = true;
+      }
+      resolve(true);
+      return;
+    }
     showModal(
       'Cambios sin guardar',
       '¿Qué deseas hacer con los cambios en los permisos?',
