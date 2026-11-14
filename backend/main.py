@@ -81,11 +81,13 @@ async def _handle_panel_socket(websocket: WebSocketServerProtocol):
         return
 
     server_state.register_panel(websocket, user)
-    asyncio.create_task(send_full_sync(websocket))
+    # Auditoría y sync no deben bloquear el login del usuario.
+    # Se lanzan en background para que el panel responda rápido.
     asyncio.create_task(
         record_audit("PANEL_CONNECTED", actor=user["username"], details="Sesión WebSocket iniciada")
     )
     try:
+        asyncio.create_task(send_full_sync(websocket))
         async for message in websocket:
             await handle_panel_message(websocket, message)
     except websockets.exceptions.ConnectionClosed:

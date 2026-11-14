@@ -28,6 +28,7 @@ def handle(action: str, params: Dict[str, Any]) -> Any:
         "get_all_devices": _get_all_devices,
         "update_tank_config": _update_tank_config,
         "get_audit_logs": _get_audit_logs,
+        "add_device": _add_device,
         "delete_device": _delete_device,
         "release_device": _release_device,
         "get_device": _get_device,
@@ -105,6 +106,12 @@ async def _get_audit_logs(params: Dict[str, Any]) -> Dict[str, Any]:
         limit=params.get("limit", 250),
     )
     return {"entries": logs}
+
+
+async def _add_device(params: Dict[str, Any]) -> Dict[str, Any]:
+    device_id = params["device_id"]
+    owner_id = params["owner_id"]
+    return await db_service.add_device_manual(device_id, owner_id)
 
 
 async def _delete_device(params: Dict[str, Any]) -> Dict[str, Any]:

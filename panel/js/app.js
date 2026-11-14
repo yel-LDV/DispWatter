@@ -1,142 +1,108 @@
 import { initAuth, tryResume } from "./auth.js";
-import { initDevices, renderDashboard, renderDeviceSelect, updateDeviceStatus, updateRelayState, updateTelemetry } from "./devices.js";
-import { initSystem } from "./system.js";
-import { initAudit, loadAudit, renderAudit } from "./audit.js";
 import { initTheme } from "./theme.js";
 import { initRegister } from "./register.js";
-import { initDevicesList } from "./devices_list.js";
-import { initHistory } from "./history.js";
-import { initLcdConfig } from "./lcd_config.js";
-import { initPermissions } from "./permissions.js";
-import { state, selectedDevice } from "./state.js";
-import { backendEndpoint, socket, on } from "./ws.js";
+import { state } from "./state.js";
+import { socket, on } from "./ws.js";
 import { el, toast } from "./ui.js";
+import { windowManager } from "./window_manager.js";
+import { taskbar } from "./taskbar.js";
+import { appDrawer } from "./app_drawer.js";
+import { createBellButton, initListeners } from "./notification_center.js";
 
-const VIEW_TITLES = {
-  dashboard: "Dashboard",
-  devices: "Dispositivos",
-  device: "Dispositivo",
-  audit: "Auditoría",
-  history: "Historial",
-  lcd: "Configuración LCD",
-  permissions: "Permisos",
-};
-
-let currentView = "dashboard";
 let everConnected = false;
+let isAuthenticated = false;
 
-function setConnectionBadge(connected, text) {
-  const badge = el("connStatusBadge");
-  const label = el("connStatusText");
-  if (!badge || !label) return;
-  badge.className = `badge ${connected ? "online" : "offline"}`;
-  label.textContent = text || (connected ? "Conectado" : "Desconectado");
-}
-
-function removeSystemView() {
-  document.querySelector('[data-view="system"]')?.remove();
-  el("view-system")?.remove();
-}
-
-function showView(name) {
-  currentView = name;
-  document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
-  el(`view-${name}`)?.classList.remove("hidden");
-  document.querySelectorAll(".nav-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.view === name);
-  });
-  el("viewTitle").textContent = VIEW_TITLES[name] || name;
-  if (name === "dashboard") renderDashboard(false);
-  if (name === "device") renderDashboard(true);
-  if (name === "audit") loadAudit();
-}
-
-function handleSync(message) {
-  // Backend sends "online_devices" and "all_devices"
-  state.devices = Array.isArray(message.online_devices) ? message.online_devices : [];
-  state.allDevices = Array.isArray(message.all_devices) ? message.all_devices : state.devices;
-  renderDeviceSelect();
-  renderDashboard(true);
-  if (currentView === "audit") loadAudit();
-  if (currentView === "devices") initDevicesList();
+function updateConnectionStatus(connected) {
+  state.connected = connected;
+  if (taskbar.updateConnection) taskbar.updateConnection();
 }
 
 function authenticated() {
-  setConnectionBadge(true, "Conectado");
+  isAuthenticated = true;
+  updateConnectionStatus(true);
   if (!everConnected) {
     everConnected = true;
     toast("Sesión autenticada", "success");
   }
-  if (currentView === "audit") loadAudit();
-}
-
-function bindNav() {
-  document.querySelectorAll(".nav-item").forEach((item) => {
-    item.addEventListener("click", () => showView(item.dataset.view));
-  });
-}
-
-function bindPasswordToggles() {
-  document.querySelectorAll("[data-toggle-password]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const input = el(button.dataset.togglePassword);
-      if (!input) return;
-      const reveal = input.type === "password";
-      input.type = reveal ? "text" : "password";
-      button.textContent = reveal ? "Ocultar" : "Ver";
-      button.setAttribute("aria-pressed", String(reveal));
-    });
-  });
+  // Open dashboard by default
+  windowManager.open('dashboard');
 }
 
 function bindSocket() {
   on("open", async () => {
-    setConnectionBadge(true, "Conectado");
-    const resumed = await tryResume();
-    if (!resumed) setConnectionBadge(true, "Sin sesión");
+    updateConnectionStatus(true);
+    // Solo intentar resume si aún no estamos autenticados.
+    // Después del login, el backend ya no espera eventos resume.
+    if (!isAuthenticated) {
+      const resumed = await tryResume();
+      if (resumed) isAuthenticated = true;
+    }
   });
-  on("close", () => setConnectionBadge(false, "Reconectando…"));
-  on("sync_all", handleSync);
-  on("telemetry", updateTelemetry);
-  on("relay_state", updateRelayState);
-  on("device_status", updateDeviceStatus);
-  on("audit_result", (message) => {
-    if (Array.isArray(message.entries)) renderAudit(message.entries);
-  });
+  on("close", () => updateConnectionStatus(false));
   on("error", (message) => {
     if (!message.request_id) toast(message.message || message.code || "Error del backend", "error");
   });
+  // Global sync_all listener: store device list in state for all apps
+  on("sync_all", (data) => {
+    const devices = data.all_devices || data.devices || [];
+    if (devices.length > 0) {
+      state.allDevices = devices;
+      state.devices = devices;
+    }
+  });
 }
 
-function bindDeviceChanges() {
-  window.addEventListener("device-changed", () => {
-    const dev = selectedDevice();
-  });
+function bindDrawerToggle() {
+  const toggle = el('drawerToggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => appDrawer.toggle());
+  }
+}
+
+function bindLogout() {
+  // Logout is handled by auth.js, which hides login screen
+  // After logout, hide desktop and show login
+}
+
+function showDesktop() {
+  const desktop = el('desktop');
+  const loginScreen = el('loginScreen');
+  const registerScreen = el('registerScreen');
+
+  if (desktop) desktop.classList.remove('hidden');
+  if (loginScreen) loginScreen.classList.add('hidden');
+  if (registerScreen) registerScreen.classList.add('hidden');
+
+  // Initialize desktop components
+  appDrawer.init();
+  taskbar.init();
+  windowManager._taskbar = taskbar;
+  
+  // Create fixed notification bell button (absolute, top-right)
+  createBellButton();
+  initListeners();
+}
+
+function hideDesktop() {
+  const desktop = el('desktop');
+  if (desktop) desktop.classList.add('hidden');
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   initTheme();
   initRegister();
-  removeSystemView();
-  el("backendEndpoint").textContent = backendEndpoint();
-  initAuth(authenticated);
-  initDevices();
-  initDevicesList();
-  // initSystem conserva las acciones remotas del dispositivo (reinicio/sleep/reset),
-  // pero el apartado de control de servicios del servidor ya no forma parte del panel.
-  initSystem();
-  initAudit();
-  initHistory();
-  initLcdConfig();
-  initPermissions();
-  bindNav();
-  bindPasswordToggles();
+  initAuth(() => {
+    authenticated();
+    showDesktop();
+  });
+
   bindSocket();
-  bindDeviceChanges();
+  bindDrawerToggle();
+  bindLogout();
   bindRegisterToggle();
-  showView("dashboard");
+
   socket.connect().catch(() => {
-    setConnectionBadge(false, "Sin backend");
+    updateConnectionStatus(false);
     toast("No se pudo conectar con el backend. Reintentando…", "error");
     socket.scheduleReconnect();
   });
@@ -147,7 +113,7 @@ function bindRegisterToggle() {
   const showLogin = el("showLogin");
   const loginScreen = el("loginScreen");
   const registerScreen = el("registerScreen");
-  
+
   if (showRegister) {
     showRegister.addEventListener("click", (e) => {
       e.preventDefault();

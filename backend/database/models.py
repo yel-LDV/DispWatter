@@ -120,6 +120,8 @@ class TankConfig(Base):
     min_relay_off_min: Mapped[float] = mapped_column(Float, default=3.0)
     # Protección contra desborde: apagar bomba al superar máximo aunque auto esté off
     overflow_protection: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Bloqueo del menú de ajustes del ESP32 (Power+Back)
+    menu_lock: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now()
     )
@@ -136,6 +138,7 @@ class TankConfig(Base):
             "auto_refill": self.auto_refill,
             "min_relay_off_min": self.min_relay_off_min,
             "overflow_protection": self.overflow_protection,
+            "menu_lock": self.menu_lock,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
