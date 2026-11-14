@@ -55,8 +55,8 @@ Opciones:
   --fresh             Ignora la configuración del host y la recrea.
   --host HOST:PORT    Notifica al backend que se compiló el firmware local.
                       Solo envía device_id y secreto para registro (ej: --host 192.168.1.100:8765).
-  --username USER     Usuario del panel (con --host).
-  --password PASS     Contraseña del panel (con --host).
+  --username USER     Usuario del panel (con --host, por defecto: admin).
+  --password PASS     Contraseña del panel (con --host, ver backend/.env ADMIN_PASSWORD).
   -h, --help          Muestra esta ayuda.
 
 Por defecto:
@@ -68,8 +68,8 @@ Ejemplos:
   ./flash.sh                      Compila y flashea el código local por USB.
   ./flash.sh --version v1.0.0     Flashea la versión v1.0.0 desde GitHub.
   ./flash.sh --list-versions      Lista las versiones disponibles.
-  ./flash.sh --host 192.168.1.100:8765 --username admin --password secret
-                                  Compila y notifica al backend que el dispositivo existe.
+  ./flash.sh --host 192.168.1.100:8765 --password <contraseña>
+                                  Compila y notifica al backend (usuario: admin por defecto).
 EOF
 }
 
@@ -256,9 +256,12 @@ if [ -n "$REMOTE_HOST" ]; then
     echo -e "${BOLD}Modo remoto: notificar compilación al backend${NC}\n"
     echo -e "  Backend:     ${GREEN}${REMOTE_HOST}${NC}"
     
-    # Validar credenciales
-    if [ -z "$REMOTE_USERNAME" ] || [ -z "$REMOTE_PASSWORD" ]; then
-        die "Modo --host requiere --username y --password."
+    # Usuario por defecto: admin (el que crea la migración del backend)
+    REMOTE_USERNAME="${REMOTE_USERNAME:-admin}"
+
+    # Validar contraseña (obligatoria)
+    if [ -z "$REMOTE_PASSWORD" ]; then
+        die "Modo --host requiere --password. Consulta ADMIN_PASSWORD en backend/.env del servidor."
     fi
 
     # Verificar que el script de remote flash exista

@@ -41,11 +41,14 @@ async def notify_firmware_compiled(
 ):
     """Conecta al backend y notifica que se compiló firmware para un dispositivo."""
 
-    # Construir URL WebSocket
-    if not host.startswith(("ws://", "wss://")):
-        ws_url = f"ws://{host}/ws/panel"
-    else:
+    # Construir URL WebSocket con puerto 8765 por defecto
+    if host.startswith(("ws://", "wss://")):
         ws_url = f"{host}/ws/panel"
+    else:
+        # Si no hay puerto especificado, agregar 8765 por defecto
+        if ":" not in host:
+            host = f"{host}:8765"
+        ws_url = f"ws://{host}/ws/panel"
 
     print(f"Conectando a {ws_url}...")
 

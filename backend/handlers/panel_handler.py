@@ -1411,7 +1411,7 @@ async def _handle_firmware_compiled(user: dict, websocket, data: dict, request_i
 
     try:
         async with get_db() as session:
-            device = await _get_device(session, device_id)
+            device = await db_service.get_device_in_session(session, device_id)
             if device is None:
                 # Create new device entry
                 device = Device(
@@ -1461,9 +1461,9 @@ async def _handle_firmware_compiled(user: dict, websocket, data: dict, request_i
         )
         asyncio.create_task(_broadcast_sync())
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Error handling firmware_compiled")
-        await send_error(websocket, request_id, "internal_error", "Error al registrar la compilación")
+        await send_error(websocket, request_id, "internal_error", str(exc) or "Error al registrar la compilación")
 
 
 # ---------------------------------------------------------------------------
