@@ -70,8 +70,14 @@ function initDashboard(container) {
 export function render(container, deviceId) {
   offAll();
 
-  const onlineDevices = (state.allDevices || state.devices || []).filter(d => d.online);
-  const selectedId = state.selectedId;
+  const allDevices = (state.allDevices || state.devices || []);
+  let selectedId = state.selectedId;
+
+  // Auto-select first device if none selected
+  if (!selectedId && allDevices.length > 0) {
+    selectedId = allDevices[0].id;
+    setSelectedDevice(selectedId);
+  }
 
   container.innerHTML = `
     <!-- Dashboard header with device selector and refresh button -->
@@ -81,12 +87,12 @@ export function render(container, deviceId) {
       </div>
       <div class="dash-header-right">
         <select class="dash-device-select" id="dashDeviceSelect" title="Seleccionar dispositivo">
-          ${onlineDevices.map(d => `
+          ${allDevices.map(d => `
             <option value="${d.id}" ${d.id === selectedId ? 'selected' : ''}>
-              ${d.name || d.id} (${d.id})
+              ${d.online ? '●' : '○'} ${d.name || d.id} (${d.id})
             </option>
           `).join('')}
-          ${onlineDevices.length === 0 ? '<option value="">Sin dispositivos online</option>' : ''}
+          ${allDevices.length === 0 ? '<option value="">Sin dispositivos</option>' : ''}
         </select>
         <button class="dash-refresh-btn" id="dashRefreshBtn" title="Actualizar datos">↻</button>
       </div>
@@ -256,15 +262,15 @@ export function render(container, deviceId) {
   function updateDeviceSelect(container) {
     const select = container.querySelector('#dashDeviceSelect');
     if (!select) return;
-    const onlineDevices = (state.allDevices || state.devices || []).filter(d => d.online);
+    const allDevices = (state.allDevices || state.devices || []);
     const currentVal = select.value;
-    select.innerHTML = onlineDevices.map(d => `
+    select.innerHTML = allDevices.map(d => `
       <option value="${d.id}" ${d.id === state.selectedId ? 'selected' : ''}>
-        ${d.name || d.id} (${d.id})
+        ${d.online ? '●' : '○'} ${d.name || d.id} (${d.id})
       </option>
-    `).join('') || '<option value="">Sin dispositivos online</option>';
+    `).join('') || '<option value="">Sin dispositivos</option>';
     // Preserve selection if still available
-    if (onlineDevices.find(d => d.id === currentVal)) {
+    if (allDevices.find(d => d.id === currentVal)) {
       select.value = currentVal;
     }
   }
