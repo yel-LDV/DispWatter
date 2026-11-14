@@ -90,7 +90,7 @@ if [ -f "$PANEL_PID_FILE" ] && kill -0 "$(cat "$PANEL_PID_FILE")" 2>/dev/null; t
     echo -e "${YELLOW}[AVISO]${NC} El panel web ya está en ejecución (PID: $(cat "$PANEL_PID_FILE"))"
 else
     echo -e "-> Arrancando Servidor de Panel Web en puerto 3000..."
-    python3 "$SCRIPT_DIR/panel_server.py" > "$LOGS_DIR/panel.log" 2>&1 &
+    "$PYTHON_BIN" "$SCRIPT_DIR/panel_server.py" > "$LOGS_DIR/panel.log" 2>&1 &
     PANEL_PID=$!
     echo "$PANEL_PID" > "$PANEL_PID_FILE"
     sleep 1

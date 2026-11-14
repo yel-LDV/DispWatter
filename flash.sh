@@ -53,6 +53,12 @@ Opciones:
                       (conserva la config del ESP32 salvo --reset-config).
   --reset-config      Fuerza la subida de data/config.json al ESP32.
   --fresh             Ignora la configuración del host y la recrea.
+  --host HOST:PORT    Flashea remoto: compila y sube el firmware al backend
+                      para OTA (ej: --host 192.168.1.100:8765).
+  --device-id ID      ID del dispositivo para OTA remoto (con --host).
+  --username USER     Usuario del panel (con --host).
+  --password PASS     Contraseña del panel (con --host).
+  --ota               Inicia OTA automáticamente después de subir (con --host --device-id).
   -h, --help          Muestra esta ayuda.
 
 Por defecto:
@@ -61,9 +67,14 @@ Por defecto:
   - Las redes WiFi se guardan en orden de prioridad (la primera manda).
 
 Ejemplos:
-  ./flash.sh                      Compila y flashea el código local.
+  ./flash.sh                      Compila y flashea el código local por USB.
   ./flash.sh --version v1.0.0     Flashea la versión v1.0.0 desde GitHub.
   ./flash.sh --list-versions      Lista las versiones disponibles.
+  ./flash.sh --host 192.168.1.100:8765 --username admin --password secret
+                                  Compila y sube el firmware al backend.
+  ./flash.sh --host 192.168.1.100:8765 --username admin --password secret \
+              --device-id abc123 --ota
+                                  Compila, sube e inicia OTA en el dispositivo.
 EOF
 }
 
@@ -73,6 +84,11 @@ RESET_CONFIG=0
 FRESH=0
 FLASH_VERSION=""
 LIST_VERSIONS=0
+REMOTE_HOST=""
+REMOTE_DEVICE_ID=""
+REMOTE_USERNAME=""
+REMOTE_PASSWORD=""
+REMOTE_OTA=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -82,6 +98,11 @@ while [ $# -gt 0 ]; do
         --non-interactive) NON_INTERACTIVE=1 ;;
         --reset-config) RESET_CONFIG=1 ;;
         --fresh) FRESH=1 ;;
+        --host) REMOTE_HOST="$2"; shift ;;
+        --device-id) REMOTE_DEVICE_ID="$2"; shift ;;
+        --username) REMOTE_USERNAME="$2"; shift ;;
+        --password) REMOTE_PASSWORD="$2"; shift ;;
+        --ota) REMOTE_OTA=1 ;;
         -h|--help) usage; exit 0 ;;
         *) die "Opción desconocida: $1 (usa --help)" ;;
     esac
@@ -233,6 +254,102 @@ echo -e "${BLUE}${BOLD}      DISPWATTER - CONFIGURACIÓN Y FLASHEO DEL ESP32    
 echo -e "${BLUE}================================================================${NC}\n"
 
 check_dependencies
+
+# Detección de IP temprana para modo remoto
+DETECTED_IP="$(detect_ip)"
+
+# ------------------------------------------------------------------------------
+# Modo: flash remoto (--host)
+# ------------------------------------------------------------------------------
+if [ -n "$REMOTE_HOST" ]; then
+    echo -e "${BOLD}Modo remoto: flashear vía backend${NC}\n"
+    echo -e "  Backend:     ${GREEN}${REMOTE_HOST}${NC}"
+    
+    # Validar credenciales
+    if [ -z "$REMOTE_USERNAME" ] || [ -z "$REMOTE_PASSWORD" ]; then
+        die "Modo --host requiere --username y --password."
+    fi
+
+    # Verificar que el script de remote flash exista
+    REMOTE_FLASH_SCRIPT="$SCRIPT_DIR/scripts/remote_flash.py"
+    [ -f "$REMOTE_FLASH_SCRIPT" ] || die "No se encuentra $REMOTE_FLASH_SCRIPT"
+
+    # Verificar python3
+    command -v python3 >/dev/null 2>&1 || die "Falta python3."
+
+    # Configurar device_config.json (silencioso, non-interactive)
+    echo ""
+    info "-> Configurando device_config.json..."
+    CONFIGURE_ARGS=(configure --file "$HOST_CONFIG" --default-host "$DETECTED_IP" --non-interactive)
+    [ "$FRESH" -eq 1 ] && CONFIGURE_ARGS+=(--reset)
+    python3 "$CONFIG_HELPER" "${CONFIGURE_ARGS[@]}"
+
+    # Compilar firmware
+    echo ""
+    info "-> Compilando firmware con PlatformIO..."
+    log_audit "FLASH_REMOTE_START" "Host=$REMOTE_HOST"
+
+    if ! pio run -d "$PIO_PROJECT"; then
+        log_audit "BUILD_ESP32_FAILED" "Config=$HOST_CONFIG"
+        die "La compilación falló. Revisa la salida anterior."
+    fi
+    ok "Compilación completada."
+
+    # Buscar el archivo .bin compilado
+    FIRMWARE_BIN="$SCRIPT_DIR/.pio/build/esp32dev/firmware.bin"
+    if [ ! -f "$FIRMWARE_BIN" ]; then
+        # Intentar encontrar cualquier .bin en el build
+        FIRMWARE_BIN=$(find "$SCRIPT_DIR/.pio/build/esp32dev" -name "firmware.bin" -o -name "*.bin" 2>/dev/null | head -1)
+    fi
+    if [ ! -f "$FIRMWARE_BIN" ]; then
+        die "No se encontró el archivo firmware.bin después de compilar."
+    fi
+
+    echo ""
+    info "-> Subiendo firmware al backend remoto..."
+    info "  Archivo: $FIRMWARE_BIN"
+
+    # Construir argumentos para remote_flash.py
+    REMOTE_ARGS=(
+        --host "$REMOTE_HOST"
+        --username "$REMOTE_USERNAME"
+        --password "$REMOTE_PASSWORD"
+        --firmware "$FIRMWARE_BIN"
+    )
+
+    if [ -n "$REMOTE_DEVICE_ID" ]; then
+        REMOTE_ARGS+=(--device-id "$REMOTE_DEVICE_ID")
+    fi
+
+    if [ "$REMOTE_OTA" -eq 1 ]; then
+        REMOTE_ARGS+=(--ota)
+    fi
+
+    # Ejecutar script de remote flash
+    if ! python3 "$REMOTE_FLASH_SCRIPT" "${REMOTE_ARGS[@]}"; then
+        log_audit "FLASH_REMOTE_FAILED" "Host=$REMOTE_HOST"
+        die "Falló la subida del firmware al backend remoto."
+    fi
+
+    log_audit "FLASH_REMOTE_SUCCESS" "Host=$REMOTE_HOST Device=$REMOTE_DEVICE_ID"
+
+    echo -e "\n${GREEN}================================================================${NC}"
+    echo -e "${GREEN}${BOLD}       FIRMWARE SUBIDO AL BACKEND REMOTO                         ${NC}"
+    echo -e "${GREEN}================================================================${NC}"
+    echo -e "  Backend:     ${GREEN}${REMOTE_HOST}${NC}"
+    if [ -n "$REMOTE_DEVICE_ID" ]; then
+        echo -e "  Dispositivo: ${GREEN}${REMOTE_DEVICE_ID}${NC}"
+        if [ "$REMOTE_OTA" -eq 1 ]; then
+            echo -e "  OTA:         ${GREEN}iniciada${NC}"
+        else
+            echo -e "  OTA:         ${YELLOW}pendiente (inicia desde el panel)${NC}"
+        fi
+    else
+        echo -e "  OTA:         ${YELLOW}pendiente (usa --device-id --ota para iniciar)${NC}"
+    fi
+    echo ""
+    exit 0
+fi
 
 # ------------------------------------------------------------------------------
 # Modo: listar versiones

@@ -62,7 +62,14 @@ stop_process "BACKEND" "$BACKEND_PID_FILE"
 stop_process "PANEL" "$PANEL_PID_FILE"
 
 # 3. Limpieza de procesos huérfanos residuales en los puertos si quedaran
-fuser -k 8765/tcp 2>/dev/null || true
-fuser -k 3000/tcp 2>/dev/null || true
+if command -v fuser &>/dev/null; then
+    fuser -k 8765/tcp 2>/dev/null || true
+    fuser -k 3000/tcp 2>/dev/null || true
+elif command -v lsof &>/dev/null; then
+    lsof -ti:8765 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti:3000 2>/dev/null | xargs kill -9 2>/dev/null || true
+else
+    echo -e "   [${YELLOW}AVISO${NC}] fuser/lsof no disponibles, saltando limpieza de puertos."
+fi
 
 echo -e "\n${GREEN}✔ Todos los servicios de DispWatter han sido apagados.${NC}\n"

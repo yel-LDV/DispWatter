@@ -1144,3 +1144,90 @@ input[readonly] {
   opacity: 0.75;
   cursor: default;
 }
+
+/* ============================== Firmware Upload ============================== */
+.fw-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fw-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fw-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.fw-card-version {
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--text-0);
+}
+
+.fw-card-type {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+}
+
+.fw-card-type.stable {
+  background: rgba(57, 255, 20, 0.12);
+  color: var(--neon-green);
+}
+
+.fw-card-type.experimental {
+  background: rgba(255, 183, 0, 0.12);
+  color: #ffb700;
+}
+
+.fw-card-type.custom {
+  background: rgba(138, 100, 255, 0.12);
+  color: #8a64ff;
+}
+
+.fw-card-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-1);
+  flex-wrap: wrap;
+}
+
+.fw-card-desc {
+  font-size: 13px;
+  color: var(--text-2);
+  font-style: italic;
+}
+
+.fw-card-sha {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.fw-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.fw-upload-status {
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.fw-ota-status {
+  padding: 12px 16px;
+  font-size: 14px;
+  color: var(--text-0);
+}

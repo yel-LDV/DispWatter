@@ -16,6 +16,7 @@ const APP_REGISTRY = {
   audit:                { icon: '⌁', title: 'Auditoría',       width: 900, height: 500 },
   system:               { icon: '▤', title: 'Sistema',         width: 500, height: 400 },
   settings:             { icon: '⚙', title: 'Ajustes',         width: 600, height: 500 },
+  firmware_upload:      { icon: '⬆', title: 'Firmware',        width: 700, height: 550 },
 };
 
 const MAX_WINDOWS = 10;
@@ -23,7 +24,7 @@ const MIN_WIDTH = 400;
 const MIN_HEIGHT = 300;
 
 /* Lazy-load app modules with caching */
-const CACHE_BUST = 'v=2025111413';
+const CACHE_BUST = 'v=2025111414';
 const appLoaders = {
   dashboard:            { loader: () => import(`./apps/dashboard.js?${CACHE_BUST}`), module: null },
   devices:              { loader: () => import(`./apps/devices.js?${CACHE_BUST}`), module: null },
@@ -37,6 +38,7 @@ const appLoaders = {
   audit:                { loader: () => import(`./apps/audit.js?${CACHE_BUST}`), module: null },
   system:               { loader: () => import(`./apps/system.js?${CACHE_BUST}`), module: null },
   settings:             { loader: () => import(`./apps/settings.js?${CACHE_BUST}`), module: null },
+  firmware_upload:      { loader: () => import(`./apps/firmware_upload.js?${CACHE_BUST}`), module: null },
 };
 
 class WindowManager {

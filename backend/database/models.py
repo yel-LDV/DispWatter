@@ -327,6 +327,41 @@ class DevicePermission(Base):
         }
 
 
+class FirmwareUpload(Base):
+    """Firmware binarios subidos para OTA desde otro dispositivo."""
+
+    __tablename__ = "firmware_uploads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Nombre/descripción del firmware (ej: "v1.0.2-patch")
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Versión del firmware
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # SHA256 del binario para verificación
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Tamaño en bytes
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Binario del firmware almacenado como BLOB
+    binary: Mapped[bytes] = mapped_column(Text, nullable=False)
+    # Descripción opcional
+    description: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # Tipo: stable, experimental, custom
+    firmware_type: Mapped[str] = mapped_column(String(32), default="custom", nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "version": self.version,
+            "sha256": self.sha256,
+            "size": self.size,
+            "description": self.description,
+            "firmware_type": self.firmware_type,
+            "uploaded_at": self.uploaded_at.isoformat() if self.uploaded_at else None,
+        }
+
+
 class LcdConfig(Base):
     """Configuración del LCD por dispositivo."""
 

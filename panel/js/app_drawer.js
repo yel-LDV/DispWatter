@@ -11,6 +11,7 @@ const APPS = [
   { id: 'audit',       icon: '⌁', label: 'Auditoría' },
   { id: 'system',      icon: '▤', label: 'Sistema' },
   { id: 'settings',    icon: '⚙', label: 'Ajustes' },
+  { id: 'firmware_upload', icon: '⬆', label: 'Firmware' },
 ];
 
 class AppDrawer {

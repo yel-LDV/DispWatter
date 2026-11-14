@@ -344,6 +344,76 @@ def _match_branch_pattern(branch: str, pattern: str) -> bool:
     return branch == pattern
 
 
+async def push_binary_to_device(
+    device_websocket: Any,
+    binary: bytes,
+    version_tag: str,
+    progress_callback: Optional[Any] = None,
+    chunk_size: int = 4096,
+) -> bool:
+    """Push firmware binary directly to device (binary already in memory).
+    
+    Used for OTA from uploaded firmware stored in the database.
+    """
+    total = len(binary)
+    if total == 0:
+        logger.error("Empty firmware binary")
+        if progress_callback:
+            await progress_callback("error", error="Firmware vacío")
+        return False
+
+    logger.info("Starting OTA push from upload: %d bytes in chunks of %d", total, chunk_size)
+
+    if progress_callback:
+        await progress_callback("pushing", progress=0, total=total)
+
+    # Send ota_start to device
+    await _send_ota_event(device_websocket, "ota_start", {
+        "version": version_tag.lstrip("v"),
+        "size": total,
+    })
+    logger.info("Sent ota_start to device (from upload)")
+
+    offset = 0
+    chunks_per_progress = 50
+    chunk_count = 0
+    chunks_per_delay = 100
+    while offset < total:
+        chunk = binary[offset:offset + chunk_size]
+        try:
+            await _send_ota_event(device_websocket, "ota_chunk", {
+                "data": chunk.hex(),
+                "offset": offset,
+                "total": total,
+            })
+        except Exception as exc:
+            logger.error("Failed to send OTA chunk at offset %d: %s", offset, exc)
+            if progress_callback:
+                await progress_callback("error", error="Device disconnected during transfer")
+            return False
+        offset += len(chunk)
+        chunk_count += 1
+        if chunk_count % chunks_per_progress == 0:
+            progress = int((offset / total) * 100)
+            logger.info("OTA progress: %d%% (%d/%d bytes)", progress, offset, total)
+            if progress_callback:
+                await progress_callback("pushing", progress=progress, total=total)
+        if chunk_count % chunks_per_delay == 0:
+            await asyncio.sleep(0.01)
+
+    logger.info("All chunks sent, sending ota_complete")
+    await _send_ota_event(device_websocket, "ota_complete", {
+        "version": version_tag.lstrip("v"),
+        "size": total,
+    })
+    logger.info("ota_complete sent to device (from upload)")
+
+    if progress_callback:
+        await progress_callback("verifying", progress=100, total=total)
+
+    return True
+
+
 async def _send_ota_event(websocket: Any, event: str, data: dict) -> None:
     try:
         await websocket.send(json.dumps({"event": event, **data}))

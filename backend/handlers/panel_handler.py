@@ -32,6 +32,7 @@ from backend.security.auth import (
     verify_password,
 )
 from backend.services import db_service
+from backend.services import firmware_service
 from backend.workers.thread_pool import worker_pool
 
 logger = logging.getLogger("DispWatter.Panel")
@@ -1388,6 +1389,173 @@ async def _handle_start_ota_update(user: dict, websocket, data: dict, request_id
 
 
 # ---------------------------------------------------------------------------
+# Firmware Upload Management
+# ---------------------------------------------------------------------------
+
+async def _handle_upload_firmware(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Upload a firmware binary (hex-encoded) to the database."""
+    name = str(data.get("name") or "").strip()
+    version = str(data.get("version") or "").strip()
+    binary_hex = str(data.get("binary_hex") or "").strip()
+    description = str(data.get("description") or "").strip() or None
+    firmware_type = str(data.get("firmware_type") or "custom").strip()
+
+    if not version or not binary_hex:
+        await send_error(websocket, request_id, "invalid_params", "version y binary_hex son requeridos")
+        return
+
+    try:
+        # Check for duplicates
+        import hashlib
+        try:
+            binary_bytes = bytes.fromhex(binary_hex)
+        except ValueError:
+            await send_error(websocket, request_id, "invalid_params", "El binario no es hex válido")
+            return
+
+        sha256 = hashlib.sha256(binary_bytes).hexdigest()
+        existing_id = await firmware_service.check_duplicate_sha256(sha256)
+        if existing_id:
+            await send_error(websocket, request_id, "duplicate", "Este firmware ya está subido")
+            return
+
+        fw = await firmware_service.upload_firmware(name, version, binary_hex, description, firmware_type)
+        await send_to_panel(
+            websocket,
+            {"event": "firmware_upload_result", "request_id": request_id, "ok": True, "firmware": fw},
+        )
+        await record_audit(
+            "FIRMWARE_UPLOADED",
+            actor=user.get("username", "USER"),
+            details=f"name={fw['name']}, version={fw['version']}, size={fw['size']}",
+        )
+    except ValueError as exc:
+        await send_error(websocket, request_id, "invalid_params", str(exc))
+    except Exception:
+        logger.exception("Error uploading firmware")
+        await send_error(websocket, request_id, "upload_error", "Error al subir el firmware")
+
+
+async def _handle_list_firmwares(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """List all uploaded firmware binaries."""
+    try:
+        firmwares = await firmware_service.list_firmwares()
+        await send_to_panel(
+            websocket,
+            {"event": "firmware_list_result", "request_id": request_id, "firmwares": firmwares},
+        )
+    except Exception:
+        logger.exception("Error listing firmwares")
+        await send_to_panel(
+            websocket,
+            {"event": "firmware_list_result", "request_id": request_id, "firmwares": []},
+        )
+
+
+async def _handle_delete_firmware(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Delete an uploaded firmware binary."""
+    firmware_id = data.get("firmware_id")
+    if firmware_id is None:
+        await send_error(websocket, request_id, "invalid_params", "firmware_id es requerido")
+        return
+
+    try:
+        deleted = await firmware_service.delete_firmware(int(firmware_id))
+        if deleted:
+            await send_ack(websocket, request_id, True)
+            await record_audit(
+                "FIRMWARE_DELETED",
+                actor=user.get("username", "USER"),
+                details=f"firmware_id={firmware_id}",
+            )
+        else:
+            await send_error(websocket, request_id, "not_found", "Firmware no encontrado")
+    except Exception:
+        logger.exception("Error deleting firmware")
+        await send_error(websocket, request_id, "delete_error", "Error al eliminar el firmware")
+
+
+async def _handle_start_ota_from_upload(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Start OTA update using an uploaded firmware from the database."""
+    from backend.services.ota_service import push_binary_to_device
+
+    device_id = str(data.get("device_id") or "").strip()
+    firmware_id = data.get("firmware_id")
+
+    if not device_id or firmware_id is None:
+        await send_error(websocket, request_id, "invalid_params", "device_id y firmware_id son requeridos")
+        return
+
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+
+    if not server_state.device_is_online(device_id):
+        await send_error(websocket, request_id, "device_offline", "El dispositivo debe estar online")
+        return
+
+    device_ws = server_state.device_sockets.get(device_id)
+    if not device_ws:
+        await send_error(websocket, request_id, "device_offline", "No se pudo conectar al dispositivo")
+        return
+
+    # Get firmware from DB
+    fw_data = await firmware_service.get_firmware(int(firmware_id))
+    if not fw_data:
+        await send_error(websocket, request_id, "not_found", "Firmware no encontrado")
+        return
+
+    version_tag = fw_data["version"]
+    await send_to_panel(
+        websocket,
+        {"event": "ota_progress", "request_id": request_id, "status": "preparing", "version": version_tag},
+    )
+
+    async def _progress(status, **kwargs):
+        try:
+            await send_to_panel(websocket, {
+                "event": "ota_progress",
+                "request_id": request_id,
+                "status": status,
+                "version": version_tag,
+                **kwargs,
+            })
+        except Exception:
+            logger.debug("Panel WebSocket closed during OTA progress update")
+
+    try:
+        binary = await firmware_service.get_firmware_binary(int(firmware_id))
+        if not binary:
+            await send_error(websocket, request_id, "firmware_error", "No se pudo leer el firmware")
+            return
+
+        success = await push_binary_to_device(device_ws, binary, version_tag, progress_callback=_progress)
+        try:
+            if success:
+                await send_to_panel(
+                    websocket,
+                    {"event": "ota_progress", "request_id": request_id, "status": "complete", "version": version_tag},
+                )
+                await record_audit(
+                    "OTA_UPDATE_FROM_UPLOAD",
+                    device_id=device_id,
+                    actor=user.get("username", "USER"),
+                    details=f"firmware_id={firmware_id}, version={version_tag}",
+                )
+            else:
+                await send_error(websocket, request_id, "ota_error", "La actualización falló")
+        except Exception:
+            logger.debug("Panel WebSocket closed before sending OTA result")
+    except Exception:
+        logger.exception("OTA update from upload failed")
+        try:
+            await send_error(websocket, request_id, "ota_error", "Error durante la actualización")
+        except Exception:
+            logger.debug("Panel WebSocket closed before sending OTA error")
+
+
+# ---------------------------------------------------------------------------
 # Router de mensajes del panel
 # ---------------------------------------------------------------------------
 async def handle_panel_message(websocket, raw_message: str) -> None:
@@ -1498,6 +1666,14 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_set_permission(user, websocket, data, request_id)
         elif event == "set_all_permissions":
             await _handle_set_all_permissions(user, websocket, data, request_id)
+        elif event == "upload_firmware":
+            await _handle_upload_firmware(user, websocket, data, request_id)
+        elif event == "list_firmwares":
+            await _handle_list_firmwares(user, websocket, data, request_id)
+        elif event == "delete_firmware":
+            await _handle_delete_firmware(user, websocket, data, request_id)
+        elif event == "start_ota_from_upload":
+            await _handle_start_ota_from_upload(user, websocket, data, request_id)
         elif event == "sync":
             await send_full_sync(websocket)
         elif event == "resume":

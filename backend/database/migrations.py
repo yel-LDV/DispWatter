@@ -269,6 +269,21 @@ async def run_migrations() -> None:
             await _meta_set(conn, "device_permissions_v2_migrated", "1")
             logger.info("Tabla device_permissions actualizada con toggles granulares")
 
+        # firmware_uploads table for storing uploaded firmware binaries
+        await conn.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS firmware_uploads ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "name TEXT NOT NULL,"
+            "version TEXT NOT NULL,"
+            "sha256 TEXT NOT NULL,"
+            "size INTEGER NOT NULL,"
+            "binary TEXT NOT NULL,"
+            "description TEXT,"
+            "firmware_type TEXT NOT NULL DEFAULT 'custom',"
+            "uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+        )
+        logger.info("Tabla firmware_uploads lista")
+
         # telemetry index for history queries
         await conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS idx_telemetry_device_created "
