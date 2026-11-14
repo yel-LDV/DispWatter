@@ -1020,3 +1020,89 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================
+   Config Progress Modal
+   ============================================ */
+
+.config-progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  animation: modal-in 0.2s ease;
+}
+
+.config-progress-window {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 40px 48px;
+  border-radius: 16px;
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  background: rgba(15, 11, 19, 0.95);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), 0 0 32px rgba(220, 38, 38, 0.1);
+  text-align: center;
+  min-width: 360px;
+  max-width: 500px;
+}
+
+.config-progress-icon {
+  font-size: 48px;
+  line-height: 1;
+  animation: pulse-icon 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-icon {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+}
+
+.config-progress-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-0);
+  margin: 0;
+}
+
+.config-progress-status {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--neon-crimson);
+  margin: 0;
+}
+
+.config-progress-detail {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.5;
+  margin: 0;
+  max-width: 400px;
+}
+
+.config-progress-window .btn {
+  margin-top: 8px;
+  min-width: 120px;
+}
+
+/* Light theme */
+[data-theme="light"] .config-progress-window {
+  background: rgba(255, 255, 255, 0.97);
+  border-color: rgba(220, 38, 38, 0.2);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.15), 0 0 32px rgba(220, 38, 38, 0.05);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .config-progress-window {
+    min-width: auto;
+    max-width: calc(100vw - 32px);
+    padding: 32px 24px;
+  }
+}

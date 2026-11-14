@@ -8,6 +8,7 @@ const TERMINAL_EVENTS = new Set([
   "ack", "error", "claim_result", "wifi_list_result",
   "system_result", "audit_result",
   "claim_code_sent", "claim_verified",
+  "update_device_config_result",
 ]);
 
 export function backendEndpoint() {

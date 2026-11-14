@@ -4,6 +4,7 @@ import { state } from '../state.js';
 import { socket, on, off } from '../ws.js';
 import { toast } from '../ui.js';
 import { showModal } from '../modal_dialog.js';
+import { showConfigProgress } from '../config_progress.js';
 
 let _listeners = [];
 let _deviceId = null;
@@ -297,20 +298,38 @@ function sendConfig(current) {
   });
 }
 
-function saveAndClose() {
+async function saveAndClose() {
   const current = getCurrentValues();
   if (!validateValues(current)) return;
+  
+  // Show progress window — blocks until result is shown and user accepts
   sendConfig(current);
-  toast('Guardando configuración...', 'info');
+  const result = await showConfigProgress(_deviceId);
+  
   // Update original values so close doesn't trigger dialog
   _originalValues = { ...current };
-  // Close the window
+  
+  // Close the window after user accepts the result
   if (_windowId) {
     const wm = window.__windowManager;
     if (wm) {
       const w = wm.get(_windowId);
       if (w) w._forceClose = true;
       wm.close(_windowId);
+    }
+  }
+  
+  // Show toast based on result
+  if (result.ok) {
+    toast('Configuración aplicada exitosamente', 'success');
+  } else {
+    const errorMsg = result.error || 'desconocido';
+    if (errorMsg === 'device_offline') {
+      toast('Dispositivo offline — config guardada en servidor', 'warning');
+    } else if (errorMsg === 'timeout') {
+      toast('Timeout — config guardada en servidor', 'warning');
+    } else {
+      toast('Error al enviar configuración', 'error');
     }
   }
 }
@@ -348,12 +367,26 @@ export function checkBeforeClose(windowId) {
         cancelText: 'Descartar',
         icon: '💧'
       }
-    ).then(result => {
+    ).then(async result => {
       if (result?.confirmed) {
         const current = getCurrentValues();
         if (validateValues(current)) {
+          // Show progress window for save from close dialog
           sendConfig(current);
-          toast('Configuración guardada', 'success');
+          const saveResult = await showConfigProgress(_deviceId);
+          
+          if (saveResult.ok) {
+            toast('Configuración aplicada exitosamente', 'success');
+          } else {
+            const errorMsg = saveResult.error || 'desconocido';
+            if (errorMsg === 'device_offline') {
+              toast('Dispositivo offline — config guardada en servidor', 'warning');
+            } else if (errorMsg === 'timeout') {
+              toast('Timeout — config guardada en servidor', 'warning');
+            } else {
+              toast('Error al enviar configuración', 'error');
+            }
+          }
         } else {
           // Validation failed, don't close
           resolve(false);

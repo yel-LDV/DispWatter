@@ -642,8 +642,11 @@ async def _handle_update_device_config(user: dict, websocket, data: dict, reques
         )
         return
 
+    from sqlalchemy.orm import joinedload
     async with get_db() as session:
-        dev = await session.execute(select(Device).where(Device.id == device_id))
+        dev = await session.execute(
+            select(Device).options(joinedload(Device.config)).where(Device.id == device_id)
+        )
         dev = dev.scalar_one_or_none()
         if dev is None:
             await send_error(websocket, request_id, "not_found", "Dispositivo no encontrado")
@@ -681,42 +684,56 @@ async def _handle_update_device_config(user: dict, websocket, data: dict, reques
     # Clear manual hold when config changes
     server_state.clear_manual_hold(device_id)
 
-    # Send config to ESP32 device — fire-and-forget so the panel doesn't
-    # wait 10 s for an ack when the device is offline.
-    asyncio.create_task(
-        request_device(
-            websocket,
-            user,
-            device_id,
-            {
-                "command": "update_config",
-                "config": {
-                    "capacity": capacity,
-                    "bottom_dist_mm": bottom,
-                    "mirror_dist_mm": mirror,
-                    "min_level": min_level,
-                    "max_level": max_level,
-                    "auto_refill": auto_refill,
-                    "min_relay_off_min": min_relay_off,
-                    "overflow_protection": overflow_protection,
-                    "menu_lock": menu_lock,
-                    "wifi_lock": wifi_lock,
-                    "device_lock": device_lock,
-                    "pump_lock": pump_lock,
-                    "sensor_lock": sensor_lock,
-                    "firmware_lock": firmware_lock,
-                    "security_lock": security_lock,
-                },
-                "request_id": request_id,
-            },
-        )
+    # Send config to ESP32 device and wait for ack (timeout 10s).
+    # The panel shows a progress window while waiting.
+    config_payload = {
+        "capacity": capacity,
+        "bottom_dist_mm": bottom,
+        "mirror_dist_mm": mirror,
+        "min_level": min_level,
+        "max_level": max_level,
+        "auto_refill": auto_refill,
+        "min_relay_off_min": min_relay_off,
+        "overflow_protection": overflow_protection,
+        "menu_lock": menu_lock,
+        "wifi_lock": wifi_lock,
+        "device_lock": device_lock,
+        "pump_lock": pump_lock,
+        "sensor_lock": sensor_lock,
+        "firmware_lock": firmware_lock,
+        "security_lock": security_lock,
+    }
+    result = await request_device(
+        websocket,
+        user,
+        device_id,
+        {
+            "command": "update_config",
+            "config": config_payload,
+            "request_id": request_id,
+        },
+        timeout=10.0,
+    )
+    device_ok = result.get("ok", False)
+    device_error = result.get("error", "")
+
+    # Respond to panel with the result
+    await send_to_panel(
+        websocket,
+        {
+            "event": "update_device_config_result",
+            "request_id": request_id,
+            "ok": device_ok,
+            "device_id": device_id,
+            "error": device_error,
+        },
     )
 
     await record_audit(
         "CONFIG_UPDATED",
         device_id=device_id,
         actor=user.get("username", "USER"),
-        details=f"name={name} location={location} capacity={capacity} bottom={bottom} mirror={mirror} min={min_level} max={max_level} auto={auto_refill} min_off={min_relay_off} overflow={overflow_protection} menu_lock={menu_lock}",
+        details=f"name={name} location={location} capacity={capacity} bottom={bottom} mirror={mirror} min={min_level} max={max_level} auto={auto_refill} min_off={min_relay_off} overflow={overflow_protection} menu_lock={menu_lock} device_ok={device_ok}",
     )
     await _broadcast_sync()
 
