@@ -31,6 +31,38 @@ async def _send(websocket, payload: dict) -> None:
         logger.debug("No se pudo enviar mensaje al dispositivo")
 
 
+async def _send_pending_config(device_id: str) -> None:
+    """Envía la configuración actual del TankConfig al dispositivo recién conectado.
+
+    Si el panel modificó la configuración mientras el dispositivo estaba offline,
+    este comando asegura que el ESP32 reciba los valores más recientes.
+    """
+    cfg = await db_service.get_tank_config(device_id)
+    if cfg is None:
+        return
+    try:
+        await server_state.send_to_device(
+            device_id,
+            {
+                "command": "update_config",
+                "config": {
+                    "capacity": cfg.capacity_liters,
+                    "bottom_dist_mm": cfg.bottom_dist_mm,
+                    "mirror_dist_mm": cfg.mirror_dist_mm,
+                    "min_level": cfg.min_level_percent,
+                    "max_level": cfg.max_level_percent,
+                    "auto_refill": cfg.auto_refill,
+                    "min_relay_off_min": cfg.min_relay_off_min,
+                    "overflow_protection": cfg.overflow_protection,
+                    "menu_lock": cfg.menu_lock,
+                },
+            },
+        )
+        logger.info("[CONFIG] Configuración enviada al dispositivo %s al conectar", device_id)
+    except Exception:
+        logger.debug("No se pudo enviar configuración pendiente a %s", device_id)
+
+
 async def _get_device(session, device_id: str) -> Optional[Device]:
     return await db_service.get_device_in_session(session, device_id)
 
@@ -139,6 +171,7 @@ async def _handle_auth(websocket, data: dict) -> None:
                 await server_state.broadcast_to_panels(
                     {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": True}
                 )
+                await _send_pending_config(device_id)
             else:
                 server_state.claim_attempts.pop(device_id, None)
                 future = claim.get("future")
@@ -176,6 +209,7 @@ async def _handle_auth(websocket, data: dict) -> None:
             await server_state.broadcast_to_panels(
                 {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": False}
             )
+            await _send_pending_config(device_id)
             return
 
         # --- Autenticación normal de un dispositivo ya vinculado ---
@@ -203,6 +237,7 @@ async def _handle_auth(websocket, data: dict) -> None:
         await server_state.broadcast_to_panels(
             {"event": "device_status", "device_id": device_id, "is_online": True, "claimed": device.status == "CLAIMED"}
         )
+        await _send_pending_config(device_id)
 
 
 def _device_authorized(websocket, device_id: str) -> bool:
