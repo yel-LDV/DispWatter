@@ -664,26 +664,29 @@ async def _handle_update_device_config(user: dict, websocket, data: dict, reques
     # Clear manual hold when config changes
     server_state.clear_manual_hold(device_id)
 
-    # Send config to ESP32 device
-    await request_device(
-        websocket,
-        user,
-        device_id,
-        {
-            "command": "update_config",
-            "config": {
-                "capacity": capacity,
-                "bottom_dist_mm": bottom,
-                "mirror_dist_mm": mirror,
-                "min_level": min_level,
-                "max_level": max_level,
-                "auto_refill": auto_refill,
-                "min_relay_off_min": min_relay_off,
-                "overflow_protection": overflow_protection,
-                "menu_lock": menu_lock,
+    # Send config to ESP32 device — fire-and-forget so the panel doesn't
+    # wait 10 s for an ack when the device is offline.
+    asyncio.create_task(
+        request_device(
+            websocket,
+            user,
+            device_id,
+            {
+                "command": "update_config",
+                "config": {
+                    "capacity": capacity,
+                    "bottom_dist_mm": bottom,
+                    "mirror_dist_mm": mirror,
+                    "min_level": min_level,
+                    "max_level": max_level,
+                    "auto_refill": auto_refill,
+                    "min_relay_off_min": min_relay_off,
+                    "overflow_protection": overflow_protection,
+                    "menu_lock": menu_lock,
+                },
+                "request_id": request_id,
             },
-            "request_id": request_id,
-        },
+        )
     )
 
     await record_audit(

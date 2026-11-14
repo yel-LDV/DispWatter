@@ -78,6 +78,7 @@ public:
     void setOverflowProtection(bool value);
     void setAutoUpdate(bool value);
     void setMenuLock(bool value);
+    void setMinRelayOffMin(uint16_t value);
 
 private:
     DeviceConfig _cfg;

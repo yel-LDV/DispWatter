@@ -581,6 +581,13 @@ void setup() {
         if (doc.containsKey("auto_update")) {
             configStore.setAutoUpdate(doc["auto_update"] | false);
         }
+        if (doc.containsKey("min_relay_off_min")) {
+            configStore.setMinRelayOffMin(doc["min_relay_off_min"] | 3);
+        }
+        // Tank parameters (capacity, bottom_dist_mm, mirror_dist_mm, min_level,
+        // max_level, auto_refill) are stored in the backend TankConfig table and
+        // used for telemetry calculations. The ESP32 does not persist them in
+        // /config.json; they are applied at runtime via the backend sync.
         Serial.println("[CONFIG] Configuración actualizada desde el panel");
     });
     comm.begin();
