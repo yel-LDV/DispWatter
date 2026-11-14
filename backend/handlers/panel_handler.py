@@ -57,6 +57,29 @@ def _client_ip(websocket) -> str:
         return "unknown"
 
 
+async def _do_login(username: str, password: str) -> dict:
+    """Execute login directly as async DB query (no worker pool overhead)."""
+    from backend.services import db_service
+    from backend.security.auth import verify_password
+
+    user = await db_service.get_user_by_username(username)
+    if user is None or not user.is_active or not verify_password(user.password_hash, password):
+        return {"ok": False, "error": "unauthorized"}
+    if not user.is_verified and user.role != "admin":
+        return {"ok": False, "error": "not_verified"}
+    await db_service.update_user_last_login(user.id)
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "is_verified": user.is_verified,
+        },
+    }
+
+
 async def _login(websocket, data: dict) -> Optional[dict]:
     ip = _client_ip(websocket)
     limiter = server_state.login_limiter
@@ -72,7 +95,6 @@ async def _login(websocket, data: dict) -> Optional[dict]:
     password = str(data.get("password") or "")
     if not username or not password:
         limiter.register_failure(ip)
-        await asyncio.sleep(0.25)
         await send_to_panel(
             websocket,
             {"event": "login_result", "ok": False, "error": "unauthorized",
@@ -80,16 +102,15 @@ async def _login(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    # Usar worker para login
+    # Execute login directly (no worker pool overhead)
     try:
-        result = await worker_pool.submit("panel", "login", username=username, password=password)
+        result = await _do_login(username, password)
     except Exception:
-        logger.exception("Error en login worker")
+        logger.exception("Error en login")
         result = {"ok": False, "error": "internal_error"}
 
     if not result.get("ok"):
         limiter.register_failure(ip)
-        await asyncio.sleep(0.35)
         error = result.get("error", "unauthorized")
         if error == "not_verified":
             await send_to_panel(
@@ -113,8 +134,29 @@ async def _login(websocket, data: dict) -> Optional[dict]:
         websocket,
         {"event": "login_result", "ok": True, "token": token, "user": user_info},
     )
-    await record_audit("LOGIN_SUCCESS", actor=user_info["username"], details=f"IP={ip}")
+    asyncio.create_task(record_audit("LOGIN_SUCCESS", actor=user_info["username"], details=f"IP={ip}"))
     return user_info
+
+
+async def _do_resume(user_id: str) -> dict:
+    """Execute resume directly as async DB query (no worker pool overhead)."""
+    from backend.services import db_service
+
+    user = await db_service.get_user_by_id(user_id)
+    if user is None or not user.is_active:
+        return {"ok": False, "error": "unauthorized"}
+    if not user.is_verified and user.role != "admin":
+        return {"ok": False, "error": "not_verified"}
+    return {
+        "ok": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "is_verified": user.is_verified,
+        },
+    }
 
 
 async def _resume(websocket, data: dict) -> Optional[dict]:
@@ -126,11 +168,11 @@ async def _resume(websocket, data: dict) -> Optional[dict]:
         )
         return None
 
-    # Usar worker para resume
+    # Execute resume directly (no worker pool overhead)
     try:
-        result = await worker_pool.submit("panel", "resume", user_id=payload["sub"])
+        result = await _do_resume(payload["sub"])
     except Exception:
-        logger.exception("Error en resume worker")
+        logger.exception("Error en resume")
         result = {"ok": False, "error": "internal_error"}
 
     if not result.get("ok"):
@@ -421,7 +463,14 @@ async def send_full_sync(websocket) -> None:
         logger.exception("Error en sync worker")
         device_list = []
 
-    await send_to_panel(websocket, {"event": "sync_all", "devices": device_list})
+    online_devices = [d for d in device_list if d.get("online", False)]
+    all_devices = device_list
+
+    await send_to_panel(websocket, {
+        "event": "sync_all",
+        "online_devices": online_devices,
+        "all_devices": all_devices,
+    })
 
 
 async def _broadcast_sync() -> None:
@@ -435,6 +484,25 @@ async def _broadcast_sync() -> None:
 # ---------------------------------------------------------------------------
 # Claim con código de 6 dígitos
 # ---------------------------------------------------------------------------
+async def _handle_start_claim_by_token(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Start claim by token: panel only enters the token, backend finds the device."""
+    from backend.services.claim_service import start_claim_by_token
+    
+    token = str(data.get("token") or "").strip()
+    if not token:
+        await send_error(websocket, request_id, "invalid_params", "Token requerido")
+        return
+    
+    success, message, device_id = await start_claim_by_token(token, user["id"])
+    if success:
+        await send_to_panel(
+            websocket,
+            {"event": "claim_code_sent", "request_id": request_id, "message": message, "device_id": device_id},
+        )
+    else:
+        await send_error(websocket, request_id, "claim_error", message)
+
+
 async def _handle_start_claim(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
     """Start claim: generate and send 6-digit code to device."""
     from backend.services.claim_service import start_claim
@@ -770,9 +838,30 @@ async def _handle_delete_device(user: dict, websocket, data: dict, request_id: O
     await _broadcast_sync()
 
 
+async def _handle_release_device(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Release a device: reset to PENDING_CLAIM so it can be re-claimed with the same token.
+    Unlike delete, this preserves device history, telemetry, and config."""
+    device_id = str(data.get("device_id") or "")
+    if not device_id:
+        await send_error(websocket, request_id, "invalid_params", "device_id requerido")
+        return
+    try:
+        await worker_pool.submit("panel", "release_device", device_id=device_id)
+    except Exception:
+        logger.exception("Error liberando dispositivo")
+        await send_error(websocket, request_id, "hardware_error", "Error interno")
+        return
+    server_state.unregister_device(device_id)
+    await record_audit("DEVICE_RELEASED", device_id=device_id, actor=user.get("username", "USER"),
+                       details="Dispositivo liberado para re-vinculación")
+    await send_ack(websocket, request_id, True)
+    await _broadcast_sync()
+
+
 async def _handle_audit(websocket, data: dict, request_id: Optional[str]) -> None:
     action_filter = str(data.get("action") or "").strip()
     device_filter = str(data.get("device_id") or "").strip()
+    user_filter = str(data.get("actor") or "").strip()
 
     try:
         result = await worker_pool.submit(
@@ -786,10 +875,264 @@ async def _handle_audit(websocket, data: dict, request_id: Optional[str]) -> Non
         logger.exception("Error obteniendo audit logs")
         logs = []
 
+    if user_filter:
+        logs = [l for l in logs if l.get("actor", "").lower() == user_filter.lower()]
+
     await send_to_panel(
         websocket,
         {"event": "audit_result", "request_id": request_id, "entries": logs},
     )
+
+
+# ---------------------------------------------------------------------------
+# Panel commands: set_auto_refill, device commands, logout
+# ---------------------------------------------------------------------------
+
+async def _handle_set_auto_refill(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Toggle auto_refill for a device."""
+    device_id = str(data.get("device_id") or "")
+    enabled = bool(data.get("enabled", False))
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+    await db_service.update_tank_config(device_id, auto_refill=enabled)
+    await request_device(
+        websocket, user, device_id,
+        {"command": "set_auto_refill", "enabled": enabled, "request_id": request_id},
+    )
+    await send_ack(websocket, request_id, True)
+    await _broadcast_sync()
+
+
+async def _handle_device_command(
+    user: dict, websocket, data: dict, request_id: Optional[str], action: str
+) -> None:
+    """Handle reboot, sleep, factory_reset device commands."""
+    device_id = str(data.get("device_id") or "")
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+    result = await request_device(
+        websocket, user, device_id,
+        {"command": action, "request_id": request_id},
+    )
+    ok = bool(result.get("ok", False))
+    await send_ack(websocket, result.get("request_id", request_id), ok, result.get("error", ""))
+    if ok:
+        await record_audit(
+            f"DEVICE_{action.upper()}", device_id=device_id,
+            actor=user.get("username", "USER"),
+        )
+
+
+async def _handle_panel_logout(websocket) -> None:
+    """Close the panel session."""
+    server_state.unregister_panel(websocket)
+    try:
+        await websocket.close(1000, "logout")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Cambio de contraseña
+# ---------------------------------------------------------------------------
+async def _handle_change_password(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Change user password."""
+    from backend.services.auth_service import change_password
+
+    old_password = str(data.get("old_password") or "")
+    new_password = str(data.get("new_password") or "")
+
+    if not old_password or not new_password:
+        await send_error(websocket, request_id, "invalid_params", "Contraseñas requeridas")
+        return
+
+    success, message = await change_password(user["id"], old_password, new_password)
+    if success:
+        await send_ack(websocket, request_id, True)
+        await record_audit(
+            "PASSWORD_CHANGED",
+            actor=user.get("username", "USER"),
+            details="Contraseña actualizada",
+        )
+    else:
+        await send_error(websocket, request_id, "password_error", message)
+
+
+# ---------------------------------------------------------------------------
+# Permisos granulares
+# ---------------------------------------------------------------------------
+async def _handle_get_granular_permissions(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Get granular permissions for a user on a device."""
+    from backend.services import permission_service
+
+    device_id = str(data.get("device_id") or "").strip()
+    target_email = str(data.get("email") or "").strip().lower()
+
+    if not device_id or not target_email:
+        await send_error(websocket, request_id, "invalid_params", "device_id y email son requeridos")
+        return
+
+    target_user = await db_service.get_user_by_email(target_email)
+    if target_user is None:
+        await send_error(websocket, request_id, "not_found", f"No existe usuario con correo {target_email}")
+        return
+
+    perms = await permission_service.get_granular_permissions(device_id, target_user.id)
+    await send_to_panel(
+        websocket,
+        {"event": "granular_permissions_result", "request_id": request_id, "permissions": perms},
+    )
+
+
+async def _handle_set_permission(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Set a single granular permission."""
+    from backend.services import permission_service
+
+    device_id = str(data.get("device_id") or "").strip()
+    target_email = str(data.get("email") or "").strip().lower()
+    permission = str(data.get("permission") or "").strip()
+    value = bool(data.get("value", False))
+
+    if not device_id or not target_email or not permission:
+        await send_error(websocket, request_id, "invalid_params", "device_id, email y permission son requeridos")
+        return
+
+    target_user = await db_service.get_user_by_email(target_email)
+    if target_user is None:
+        await send_error(websocket, request_id, "not_found", f"No existe usuario con correo {target_email}")
+        return
+
+    success, message = await permission_service.set_permission(
+        device_id=device_id,
+        user_id=target_user.id,
+        permission=permission,
+        value=value,
+    )
+
+    if success:
+        await send_ack(websocket, request_id, True)
+        await record_audit(
+            "PERMISSION_CHANGED",
+            device_id=device_id,
+            actor=user.get("username", "USER"),
+            details=f"{target_email}: {permission}={value}",
+        )
+    else:
+        await send_error(websocket, request_id, "permission_error", message)
+
+
+async def _handle_set_all_permissions(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Set all granular permissions (master toggle)."""
+    from backend.services import permission_service
+
+    device_id = str(data.get("device_id") or "").strip()
+    target_email = str(data.get("email") or "").strip().lower()
+    all_value = bool(data.get("all_value", False))
+
+    if not device_id or not target_email:
+        await send_error(websocket, request_id, "invalid_params", "device_id y email son requeridos")
+        return
+
+    target_user = await db_service.get_user_by_email(target_email)
+    if target_user is None:
+        await send_error(websocket, request_id, "not_found", f"No existe usuario con correo {target_email}")
+        return
+
+    all_perms = {field: all_value for field in permission_service.GRANULAR_PERMISSIONS}
+    success, message = await permission_service.set_all_permissions(
+        device_id=device_id,
+        user_id=target_user.id,
+        all_permissions=all_perms,
+    )
+
+    if success:
+        await send_ack(websocket, request_id, True)
+        await record_audit(
+            "PERMISSIONS_MASTER_CHANGED",
+            device_id=device_id,
+            actor=user.get("username", "USER"),
+            details=f"{target_email}: all={all_value}",
+        )
+    else:
+        await send_error(websocket, request_id, "permission_error", message)
+
+
+# ---------------------------------------------------------------------------
+# OTA Updates
+# ---------------------------------------------------------------------------
+async def _handle_list_ota_versions(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """List all available firmware versions from GitHub Releases."""
+    from backend.services.ota_service import list_versions
+
+    try:
+        versions = await list_versions()
+    except Exception:
+        logger.exception("Error listing OTA versions")
+        versions = []
+
+    await send_to_panel(
+        websocket,
+        {"event": "ota_versions_result", "request_id": request_id, "versions": versions},
+    )
+
+
+async def _handle_start_ota_update(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Start OTA update: download binary and push to device."""
+    from backend.services.ota_service import get_version, push_to_device
+
+    device_id = str(data.get("device_id") or "").strip()
+    version_tag = str(data.get("version") or "").strip()
+
+    if not device_id or not version_tag:
+        await send_error(websocket, request_id, "invalid_params", "device_id y version son requeridos")
+        return
+
+    device, error = await authorize_device(user, device_id)
+    if error:
+        await send_error(websocket, request_id, error)
+        return
+
+    if not server_state.device_is_online(device_id):
+        await send_error(websocket, request_id, "device_offline", "El dispositivo debe estar online")
+        return
+
+    version_info = await get_version(version_tag)
+    if not version_info:
+        await send_error(websocket, request_id, "not_found", f"Version {version_tag} no encontrada")
+        return
+
+    device_ws = server_state.device_socket(device_id)
+    if not device_ws:
+        await send_error(websocket, request_id, "device_offline", "No se pudo conectar al dispositivo")
+        return
+
+    await send_to_panel(
+        websocket,
+        {"event": "ota_progress", "request_id": request_id, "status": "downloading", "version": version_tag},
+    )
+
+    try:
+        success = await push_to_device(device_ws, version_tag)
+        if success:
+            await send_to_panel(
+                websocket,
+                {"event": "ota_progress", "request_id": request_id, "status": "complete", "version": version_tag},
+            )
+            await record_audit(
+                "OTA_UPDATE",
+                device_id=device_id,
+                actor=user.get("username", "USER"),
+                details=f"version={version_tag}",
+            )
+        else:
+            await send_error(websocket, request_id, "ota_error", "La actualización falló")
+    except Exception:
+        logger.exception("OTA update failed")
+        await send_error(websocket, request_id, "ota_error", "Error durante la actualización")
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +1162,8 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await send_to_panel(websocket, {"event": "pong"})
         elif event == "claim_device":
             await _handle_claim(user, websocket, data, request_id)
+        elif event == "start_claim_by_token":
+            await _handle_start_claim_by_token(user, websocket, data, request_id)
         elif event == "start_claim":
             await _handle_start_claim(user, websocket, data, request_id)
         elif event == "verify_claim":
@@ -851,6 +1196,8 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             )
         elif event == "delete_device":
             await _handle_delete_device(user, websocket, data, request_id)
+        elif event == "release_device":
+            await _handle_release_device(user, websocket, data, request_id)
         elif event == "get_audit":
             await _handle_audit(websocket, data, request_id)
         elif event == "resend_verification":
@@ -873,8 +1220,34 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_relay(user, websocket, data, request_id)
         elif command == "display":
             await _handle_display(user, websocket, data, request_id)
+        elif event == "list_ota_versions":
+            await _handle_list_ota_versions(user, websocket, data, request_id)
+        elif event == "start_ota_update":
+            await _handle_start_ota_update(user, websocket, data, request_id)
+        elif event == "change_password":
+            await _handle_change_password(user, websocket, data, request_id)
+        elif event == "get_granular_permissions":
+            await _handle_get_granular_permissions(user, websocket, data, request_id)
+        elif event == "set_permission":
+            await _handle_set_permission(user, websocket, data, request_id)
+        elif event == "set_all_permissions":
+            await _handle_set_all_permissions(user, websocket, data, request_id)
         elif event == "sync":
             await send_full_sync(websocket)
+        elif event == "set_relay":
+            await _handle_relay(user, websocket, data, request_id)
+        elif event == "set_auto_refill":
+            await _handle_set_auto_refill(user, websocket, data, request_id)
+        elif event == "reboot":
+            await _handle_device_command(user, websocket, data, request_id, "reboot")
+        elif event == "sleep":
+            await _handle_device_command(user, websocket, data, request_id, "sleep")
+        elif event == "factory_reset":
+            await _handle_device_command(user, websocket, data, request_id, "factory_reset")
+        elif event == "logout":
+            await _handle_panel_logout(websocket)
+        elif event == "resume":
+            pass
         else:
             await send_error(websocket, request_id, "invalid_params", "Evento no soportado")
     except Exception:

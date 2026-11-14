@@ -81,9 +81,11 @@ async def _handle_panel_socket(websocket: WebSocketServerProtocol):
         return
 
     server_state.register_panel(websocket, user)
-    await record_audit("PANEL_CONNECTED", actor=user["username"], details="Sesión WebSocket iniciada")
+    asyncio.create_task(send_full_sync(websocket))
+    asyncio.create_task(
+        record_audit("PANEL_CONNECTED", actor=user["username"], details="Sesión WebSocket iniciada")
+    )
     try:
-        await send_full_sync(websocket)
         async for message in websocket:
             await handle_panel_message(websocket, message)
     except websockets.exceptions.ConnectionClosed:

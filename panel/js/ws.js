@@ -7,6 +7,7 @@ const pending = new Map();
 const TERMINAL_EVENTS = new Set([
   "ack", "error", "claim_result", "wifi_list_result",
   "system_result", "audit_result",
+  "claim_code_sent", "claim_verified",
 ]);
 
 export function backendEndpoint() {
@@ -190,8 +191,13 @@ export class PanelSocket {
 
   async login(username, password) {
     await this.connect();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        off();
+        reject(new Error("Tiempo de espera agotado al iniciar sesión"));
+      }, 10000);
       const off = on("login_result", (data) => {
+        window.clearTimeout(timer);
         off();
         resolve(data);
       });
@@ -201,8 +207,13 @@ export class PanelSocket {
 
   async resume(token) {
     await this.connect();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        off();
+        reject(new Error("Tiempo de espera agotado al recuperar sesión"));
+      }, 10000);
       const off = on("resume_result", (data) => {
+        window.clearTimeout(timer);
         off();
         resolve(data);
       });
