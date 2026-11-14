@@ -1389,6 +1389,84 @@ async def _handle_start_ota_update(user: dict, websocket, data: dict, request_id
 
 
 # ---------------------------------------------------------------------------
+# Firmware Compiled Notification (from flash.sh --host)
+# ---------------------------------------------------------------------------
+
+async def _handle_firmware_compiled(user: dict, websocket, data: dict, request_id: Optional[str]) -> None:
+    """Handle notification that firmware was compiled locally.
+    
+    Receives only device_id, key_hash, and firmware_version.
+    No binary data, no WiFi info, no passwords.
+    Registers or updates the device in the DB so the backend knows it exists.
+    """
+    device_id = str(data.get("device_id") or "").strip()
+    key_hash = str(data.get("key_hash") or "").strip()
+    firmware_version = str(data.get("firmware_version") or "").strip()
+    device_name = str(data.get("device_name") or "").strip()
+    device_location = str(data.get("device_location") or "").strip()
+
+    if not device_id or not key_hash:
+        await send_error(websocket, request_id, "invalid_params", "device_id y key_hash son requeridos")
+        return
+
+    try:
+        async with get_db() as session:
+            device = await _get_device(session, device_id)
+            if device is None:
+                # Create new device entry
+                device = Device(
+                    id=device_id,
+                    name=device_name or device_id,
+                    location=device_location or "",
+                    firmware_version=firmware_version or "unknown",
+                    key_hash=key_hash,
+                    status="PENDING_CLAIM",
+                    is_online=False,
+                )
+                session.add(device)
+                await session.commit()
+                await session.refresh(device)
+                logger.info("[FIRMWARE_COMPILED] Nuevo dispositivo registrado: %s", device_id)
+            else:
+                # Update existing device's key_hash and firmware version
+                device.key_hash = key_hash
+                if firmware_version:
+                    device.firmware_version = firmware_version
+                if device_name:
+                    device.name = device_name
+                if device_location:
+                    device.location = device_location
+                await session.commit()
+                logger.info("[FIRMWARE_COMPILED] Dispositivo actualizado: %s", device_id)
+
+        await send_to_panel(
+            websocket,
+            {
+                "event": "firmware_compiled_result",
+                "request_id": request_id,
+                "ok": True,
+                "device_id": device_id,
+                "firmware_version": firmware_version,
+            },
+        )
+        await record_audit(
+            "FIRMWARE_COMPILED",
+            device_id=device_id,
+            actor=user.get("username", "USER"),
+            details=f"version={firmware_version}",
+        )
+        # Notify panels about the device update
+        await server_state.broadcast_to_panels(
+            {"event": "device_status", "device_id": device_id, "is_online": False, "firmware": firmware_version}
+        )
+        asyncio.create_task(_broadcast_sync())
+
+    except Exception:
+        logger.exception("Error handling firmware_compiled")
+        await send_error(websocket, request_id, "internal_error", "Error al registrar la compilación")
+
+
+# ---------------------------------------------------------------------------
 # Firmware Upload Management
 # ---------------------------------------------------------------------------
 
@@ -1666,6 +1744,8 @@ async def handle_panel_message(websocket, raw_message: str) -> None:
             await _handle_set_permission(user, websocket, data, request_id)
         elif event == "set_all_permissions":
             await _handle_set_all_permissions(user, websocket, data, request_id)
+        elif event == "firmware_compiled":
+            await _handle_firmware_compiled(user, websocket, data, request_id)
         elif event == "upload_firmware":
             await _handle_upload_firmware(user, websocket, data, request_id)
         elif event == "list_firmwares":

@@ -53,12 +53,10 @@ Opciones:
                       (conserva la config del ESP32 salvo --reset-config).
   --reset-config      Fuerza la subida de data/config.json al ESP32.
   --fresh             Ignora la configuración del host y la recrea.
-  --host HOST:PORT    Flashea remoto: compila y sube el firmware al backend
-                      para OTA (ej: --host 192.168.1.100:8765).
-  --device-id ID      ID del dispositivo para OTA remoto (con --host).
+  --host HOST:PORT    Notifica al backend que se compiló el firmware local.
+                      Solo envía device_id y secreto para registro (ej: --host 192.168.1.100:8765).
   --username USER     Usuario del panel (con --host).
   --password PASS     Contraseña del panel (con --host).
-  --ota               Inicia OTA automáticamente después de subir (con --host --device-id).
   -h, --help          Muestra esta ayuda.
 
 Por defecto:
@@ -71,10 +69,7 @@ Ejemplos:
   ./flash.sh --version v1.0.0     Flashea la versión v1.0.0 desde GitHub.
   ./flash.sh --list-versions      Lista las versiones disponibles.
   ./flash.sh --host 192.168.1.100:8765 --username admin --password secret
-                                  Compila y sube el firmware al backend.
-  ./flash.sh --host 192.168.1.100:8765 --username admin --password secret \
-              --device-id abc123 --ota
-                                  Compila, sube e inicia OTA en el dispositivo.
+                                  Compila y notifica al backend que el dispositivo existe.
 EOF
 }
 
@@ -85,10 +80,8 @@ FRESH=0
 FLASH_VERSION=""
 LIST_VERSIONS=0
 REMOTE_HOST=""
-REMOTE_DEVICE_ID=""
 REMOTE_USERNAME=""
 REMOTE_PASSWORD=""
-REMOTE_OTA=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -99,10 +92,8 @@ while [ $# -gt 0 ]; do
         --reset-config) RESET_CONFIG=1 ;;
         --fresh) FRESH=1 ;;
         --host) REMOTE_HOST="$2"; shift ;;
-        --device-id) REMOTE_DEVICE_ID="$2"; shift ;;
         --username) REMOTE_USERNAME="$2"; shift ;;
         --password) REMOTE_PASSWORD="$2"; shift ;;
-        --ota) REMOTE_OTA=1 ;;
         -h|--help) usage; exit 0 ;;
         *) die "Opción desconocida: $1 (usa --help)" ;;
     esac
@@ -262,7 +253,7 @@ DETECTED_IP="$(detect_ip)"
 # Modo: flash remoto (--host)
 # ------------------------------------------------------------------------------
 if [ -n "$REMOTE_HOST" ]; then
-    echo -e "${BOLD}Modo remoto: flashear vía backend${NC}\n"
+    echo -e "${BOLD}Modo remoto: notificar compilación al backend${NC}\n"
     echo -e "  Backend:     ${GREEN}${REMOTE_HOST}${NC}"
     
     # Validar credenciales
@@ -295,58 +286,61 @@ if [ -n "$REMOTE_HOST" ]; then
     fi
     ok "Compilación completada."
 
-    # Buscar el archivo .bin compilado
-    FIRMWARE_BIN="$SCRIPT_DIR/.pio/build/esp32dev/firmware.bin"
-    if [ ! -f "$FIRMWARE_BIN" ]; then
-        # Intentar encontrar cualquier .bin en el build
-        FIRMWARE_BIN=$(find "$SCRIPT_DIR/.pio/build/esp32dev" -name "firmware.bin" -o -name "*.bin" 2>/dev/null | head -1)
+    # Leer device_config.json para obtener device_id, key_hash, nombre, ubicación y versión
+    if [ ! -f "$HOST_CONFIG" ]; then
+        die "No se encuentra $HOST_CONFIG después de configurar."
     fi
-    if [ ! -f "$FIRMWARE_BIN" ]; then
-        die "No se encontró el archivo firmware.bin después de compilar."
+
+    DEVICE_ID=$(python3 -c "import json; d=json.load(open('$HOST_CONFIG')); print(d['device']['id'])")
+    DEVICE_NAME=$(python3 -c "import json; d=json.load(open('$HOST_CONFIG')); print(d['device'].get('name',''))")
+    DEVICE_LOCATION=$(python3 -c "import json; d=json.load(open('$HOST_CONFIG')); print(d['device'].get('location',''))")
+    FIRMWARE_VERSION=$(python3 -c "import json; d=json.load(open('$HOST_CONFIG')); print(d['device'].get('firmware','1.0.0'))")
+    KEY_HASH=$(python3 -c "import json; d=json.load(open('$HOST_CONFIG')); print(d['device'].get('key_hash',''))")
+
+    if [ -z "$DEVICE_ID" ] || [ -z "$KEY_HASH" ]; then
+        die "device_id o key_hash no encontrados en $HOST_CONFIG."
     fi
 
     echo ""
-    info "-> Subiendo firmware al backend remoto..."
-    info "  Archivo: $FIRMWARE_BIN"
+    info "-> Notificando compilación al backend..."
+    info "  Dispositivo: $DEVICE_ID"
+    info "  Versión:     $FIRMWARE_VERSION"
 
     # Construir argumentos para remote_flash.py
     REMOTE_ARGS=(
         --host "$REMOTE_HOST"
         --username "$REMOTE_USERNAME"
         --password "$REMOTE_PASSWORD"
-        --firmware "$FIRMWARE_BIN"
+        --device-id "$DEVICE_ID"
+        --key-hash "$KEY_HASH"
+        --firmware-version "$FIRMWARE_VERSION"
     )
 
-    if [ -n "$REMOTE_DEVICE_ID" ]; then
-        REMOTE_ARGS+=(--device-id "$REMOTE_DEVICE_ID")
+    if [ -n "$DEVICE_NAME" ]; then
+        REMOTE_ARGS+=(--device-name "$DEVICE_NAME")
     fi
 
-    if [ "$REMOTE_OTA" -eq 1 ]; then
-        REMOTE_ARGS+=(--ota)
+    if [ -n "$DEVICE_LOCATION" ]; then
+        REMOTE_ARGS+=(--device-location "$DEVICE_LOCATION")
     fi
 
-    # Ejecutar script de remote flash
+    # Ejecutar script de notificación
     if ! python3 "$REMOTE_FLASH_SCRIPT" "${REMOTE_ARGS[@]}"; then
         log_audit "FLASH_REMOTE_FAILED" "Host=$REMOTE_HOST"
-        die "Falló la subida del firmware al backend remoto."
+        die "Falló la notificación de compilación al backend remoto."
     fi
 
-    log_audit "FLASH_REMOTE_SUCCESS" "Host=$REMOTE_HOST Device=$REMOTE_DEVICE_ID"
+    log_audit "FLASH_REMOTE_SUCCESS" "Host=$REMOTE_HOST Device=$DEVICE_ID"
 
     echo -e "\n${GREEN}================================================================${NC}"
-    echo -e "${GREEN}${BOLD}       FIRMWARE SUBIDO AL BACKEND REMOTO                         ${NC}"
+    echo -e "${GREEN}${BOLD}       COMPILACIÓN NOTIFICADA AL BACKEND                         ${NC}"
     echo -e "${GREEN}================================================================${NC}"
     echo -e "  Backend:     ${GREEN}${REMOTE_HOST}${NC}"
-    if [ -n "$REMOTE_DEVICE_ID" ]; then
-        echo -e "  Dispositivo: ${GREEN}${REMOTE_DEVICE_ID}${NC}"
-        if [ "$REMOTE_OTA" -eq 1 ]; then
-            echo -e "  OTA:         ${GREEN}iniciada${NC}"
-        else
-            echo -e "  OTA:         ${YELLOW}pendiente (inicia desde el panel)${NC}"
-        fi
-    else
-        echo -e "  OTA:         ${YELLOW}pendiente (usa --device-id --ota para iniciar)${NC}"
-    fi
+    echo -e "  Dispositivo: ${GREEN}${DEVICE_ID}${NC}"
+    echo -e "  Versión:     ${GREEN}${FIRMWARE_VERSION}${NC}"
+    echo ""
+    echo -e "  El backend ahora conoce este dispositivo y su secreto."
+    echo -e "  Cuando el ESP32 se conecte, podrá autenticarse."
     echo ""
     exit 0
 fi
