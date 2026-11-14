@@ -113,6 +113,69 @@ def verify_device_proof(key_hash: str, nonce: str, proof: str) -> bool:
 # ---------------------------------------------------------------------------
 # Origen del WebSocket del panel
 # ---------------------------------------------------------------------------
+
+# Orígenes extra detectados automáticamente (IP pública del servidor).
+_auto_origins: list[str] = []
+
+
+def _detect_public_origin() -> None:
+    """Detecta la IP pública del servidor y la agrega a los orígenes permitidos.
+
+    Se ejecuta una vez al importar el módulo. Si no se puede obtener la IP
+    pública (sin internet, curl/wget no instalados), no pasa nada: el panel
+    seguirá funcionando desde localhost y la LAN.
+    """
+    import subprocess
+    import urllib.request
+
+    public_ip = None
+
+    # Intentar con urllib (sin dependencias externas)
+    try:
+        req = urllib.request.Request(
+            "https://api.ipify.org",
+            headers={"User-Agent": "DispWatter/1.0"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            public_ip = resp.read().decode("utf-8").strip()
+    except Exception:
+        pass
+
+    # Fallback: intentar con curl
+    if not public_ip:
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "--max-time", "3", "https://api.ipify.org"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                public_ip = result.stdout.strip()
+        except Exception:
+            pass
+
+    # Fallback: intentar con wget
+    if not public_ip:
+        try:
+            result = subprocess.run(
+                ["wget", "-qO-", "--timeout=3", "https://api.ipify.org"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                public_ip = result.stdout.strip()
+        except Exception:
+            pass
+
+    if public_ip:
+        for scheme in ("http", "https"):
+            origin = f"{scheme}://{public_ip}:{settings.PANEL_PORT}"
+            _auto_origins.append(origin)
+        logger.info("[ORIGIN] IP pública detectada: %s (orígenes auto-agregados)", public_ip)
+
+
+_detect_public_origin()
+
+
 def is_origin_allowed(origin: Optional[str]) -> bool:
     """Valida el header Origin del panel.
 
@@ -120,10 +183,11 @@ def is_origin_allowed(origin: Optional[str]) -> bool:
     - Si PANEL_ORIGINS contiene "*" se permite cualquiera.
     - Se permiten orígenes loopback o de red privada en el puerto del panel,
       para poder abrir el panel desde otro equipo de la LAN.
+    - La IP pública del servidor se detecta automáticamente al arrancar.
     """
     if not origin:
         return True
-    allowed = settings.PANEL_ORIGINS_LIST
+    allowed = settings.PANEL_ORIGINS_LIST + _auto_origins
     normalized = origin.rstrip("/")
     if "*" in allowed or normalized in allowed:
         return True
