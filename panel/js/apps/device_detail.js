@@ -220,7 +220,6 @@ export function render(container, deviceId) {
       badgeEl.className = `badge ${data.is_online ? 'online' : 'offline'}`;
       badgeEl.innerHTML = `<span class="dot"></span>${data.is_online ? 'Online' : 'Offline'}`;
     }
-    const ipEl = container.querySelector('.status-row:has(> .status-label:has(+:contains("IP")))');
     // Update IP if available
     if (data.ip) {
       const statusRows = container.querySelectorAll('.status-row .status-value');

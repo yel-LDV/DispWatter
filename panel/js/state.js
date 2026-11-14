@@ -31,7 +31,9 @@ export function setSelectedDevice(deviceId) {
 }
 
 export function selectedDevice() {
-  return state.devices.find((dev) => dev.id === state.selectedId) || null;
+  // Search in allDevices first (populated by sync_all), then fall back to devices
+  const all = state.allDevices && state.allDevices.length ? state.allDevices : state.devices;
+  return all.find((dev) => dev.id === state.selectedId) || null;
 }
 
 export function upsertDevice(device) {

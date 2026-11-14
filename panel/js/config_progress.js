@@ -1,6 +1,6 @@
 /* Config Progress — Ventana modal de progreso al guardar configuración del dispositivo */
 
-import { on, off } from '../ws.js';
+import { on, off } from './ws.js';
 
 let _overlay = null;
 let _window = null;

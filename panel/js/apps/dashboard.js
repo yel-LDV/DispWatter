@@ -18,7 +18,14 @@ function listen(event, fn) {
 
 // Initialize dashboard with current data from state (sync_all may have already arrived)
 function initDashboard(container) {
-  const dev = (state.allDevices || state.devices || []).find(d => d.id === state.selectedId);
+  const all = (state.allDevices || state.devices || []);
+  let dev = all.find(d => d.id === state.selectedId);
+  // If selectedId doesn't match any device (e.g., from stale localStorage),
+  // auto-select the first available device
+  if (!dev && all.length > 0) {
+    dev = all[0];
+    setSelectedDevice(dev.id);
+  }
   if (!dev) return;
 
   // Set relay state from sync data
@@ -80,6 +87,23 @@ export function render(container, deviceId) {
   if (!selectedId && allDevices.length > 0) {
     selectedId = allDevices[0].id;
     setSelectedDevice(selectedId);
+  }
+
+  // If no devices available yet, show loading message
+  if (allDevices.length === 0) {
+    container.innerHTML = `
+      <style>@keyframes dashSpin{to{transform:rotate(360deg)}}</style>
+      <div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;">
+        <div style="width:32px;height:32px;border:3px solid #ccc;border-top-color:#00e5ff;border-radius:50%;animation:dashSpin 1s linear infinite;"></div>
+        <p style="color:#888;">Cargando dispositivos...</p>
+      </div>
+    `;
+    // Listen for sync_all to populate devices
+    listen('sync_all', () => {
+      // Re-render with devices
+      render(container, deviceId);
+    });
+    return;
   }
 
   container.innerHTML = `
@@ -205,9 +229,22 @@ export function render(container, deviceId) {
   });
 
   // Unified sync_all listener: refresh dashboard + update device selector
+  // If no device was selected when render() ran (because sync hadn't arrived yet),
+  // select the first device now and re-initialize the full dashboard.
   listen('sync_all', () => {
-    initDashboard(container);
-    updateDeviceSelect(container);
+    const allDevices = (state.allDevices || state.devices || []);
+    if (allDevices.length > 0 && !state.selectedId) {
+      const firstId = allDevices[0].id;
+      setSelectedDevice(firstId);
+      // Re-render the selector with the new selection
+      updateDeviceSelect(container);
+      // Now initDashboard will find the selected device
+      initDashboard(container);
+      enableSwitchesIfOnline(container);
+    } else {
+      initDashboard(container);
+      updateDeviceSelect(container);
+    }
   });
 
   // Listen for device_status to update online/offline in real time

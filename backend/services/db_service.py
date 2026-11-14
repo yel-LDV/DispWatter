@@ -525,6 +525,15 @@ async def get_all_devices_for_sync() -> List[Dict[str, Any]]:
                     "minLevel": cfg.min_level_percent if cfg else 25.0,
                     "maxLevel": cfg.max_level_percent if cfg else 90.0,
                     "autoRefill": cfg.auto_refill if cfg else True,
+                    "minRelayOffMin": cfg.min_relay_off_min if cfg else 3.0,
+                    "overflowProtection": cfg.overflow_protection if cfg else True,
+                    "menuLock": cfg.menu_lock if cfg else False,
+                    "wifiLock": cfg.wifi_lock if cfg else False,
+                    "deviceLock": cfg.device_lock if cfg else False,
+                    "pumpLock": cfg.pump_lock if cfg else False,
+                    "sensorLock": cfg.sensor_lock if cfg else False,
+                    "firmwareLock": cfg.firmware_lock if cfg else False,
+                    "securityLock": cfg.security_lock if cfg else False,
                     "maxWaterHeightMm": (
                         (cfg.bottom_dist_mm - cfg.mirror_dist_mm) if cfg else 800.0
                     ),

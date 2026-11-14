@@ -55,6 +55,12 @@ async function submitLogin() {
     showApp(result.user);
     authenticatedCallback();
     toast(`Bienvenido, ${result.user.username}`, "success");
+    // Solicitar sincronización de dispositivos después del login
+    try {
+      socket.send({ event: "sync" });
+    } catch (e) {
+      console.warn("No se pudo solicitar sync después del login", e);
+    }
   } catch (err) {
     error.textContent = err.message || "No se pudo conectar con el backend";
   } finally {
@@ -79,6 +85,12 @@ export async function tryResume() {
     state.user = result.user;
     showApp(result.user);
     authenticatedCallback();
+    // Solicitar sincronización de dispositivos después del resume
+    try {
+      socket.send({ event: "sync" });
+    } catch (e) {
+      console.warn("No se pudo solicitar sync después del resume", e);
+    }
     return true;
   } catch {
     showLogin("No se pudo recuperar la sesión.");

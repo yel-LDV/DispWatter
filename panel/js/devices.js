@@ -211,7 +211,7 @@ async function onAutoSwitchChange(event) {
   input.disabled = true;
   try {
     const result = await socket.request({
-      event: "update_config",
+      event: "update_device_config",
       device_id: dev.id,
       config: {
         capacity: dev.capacity,
@@ -220,9 +220,18 @@ async function onAutoSwitchChange(event) {
         min_level: dev.minLevel,
         max_level: dev.maxLevel,
         auto_refill: desired,
+        min_relay_off_min: dev.minRelayOffMin ?? 3.0,
+        overflow_protection: dev.overflowProtection ?? true,
+        menu_lock: dev.menuLock ?? false,
+        wifi_lock: dev.wifiLock ?? false,
+        device_lock: dev.deviceLock ?? false,
+        pump_lock: dev.pumpLock ?? false,
+        sensor_lock: dev.sensorLock ?? false,
+        firmware_lock: dev.firmwareLock ?? false,
+        security_lock: dev.securityLock ?? false,
       },
     });
-    if (result.event === "ack" && result.ok) {
+    if (result.event === "update_device_config_result" && result.ok) {
       dev.autoRefill = desired;
       dev.autoPaused = false;
       toast(desired ? "Llenado automático activado" : "Llenado automático desactivado", "success");
@@ -533,7 +542,7 @@ async function saveTankConfig(event) {
   }
 
   const payload = {
-    event: "update_config",
+    event: "update_device_config",
     device_id: dev.id,
     config: {
       capacity: Number(el("cfgCapacity").value),
@@ -542,12 +551,21 @@ async function saveTankConfig(event) {
       min_level: Number(el("cfgMinLevel").value),
       max_level: Number(el("cfgMaxLevel").value),
       auto_refill: el("cfgAutoRefill").checked,
+      min_relay_off_min: dev.minRelayOffMin ?? 3.0,
+      overflow_protection: dev.overflowProtection ?? true,
+      menu_lock: dev.menuLock ?? false,
+      wifi_lock: dev.wifiLock ?? false,
+      device_lock: dev.deviceLock ?? false,
+      pump_lock: dev.pumpLock ?? false,
+      sensor_lock: dev.sensorLock ?? false,
+      firmware_lock: dev.firmwareLock ?? false,
+      security_lock: dev.securityLock ?? false,
     },
   };
 
   try {
     const result = await socket.request(payload);
-    if (result.event === "ack" && result.ok) {
+    if (result.event === "update_device_config_result" && result.ok) {
       toast("Configuración guardada", "success");
     } else {
       handleRequestError(result, "No se pudo guardar");

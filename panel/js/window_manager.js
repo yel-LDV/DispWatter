@@ -23,19 +23,20 @@ const MIN_WIDTH = 400;
 const MIN_HEIGHT = 300;
 
 /* Lazy-load app modules with caching */
+const CACHE_BUST = 'v=2025111407';
 const appLoaders = {
-  dashboard:            { loader: () => import('./apps/dashboard.js'), module: null },
-  devices:              { loader: () => import('./apps/devices.js'), module: null },
-  device_detail:        { loader: () => import('./apps/device_detail.js'), module: null },
-  device_settings_hub:  { loader: () => import('./apps/device_settings_hub.js'), module: null },
-  device_config:        { loader: () => import('./apps/device_config.js'), module: null },
-  device_permissions:   { loader: () => import('./apps/device_permissions.js'), module: null },
-  history:              { loader: () => import('./apps/history.js'), module: null },
-  lcd:                  { loader: () => import('./apps/lcd.js'), module: null },
-  permissions:          { loader: () => import('./apps/permissions.js'), module: null },
-  audit:                { loader: () => import('./apps/audit.js'), module: null },
-  system:               { loader: () => import('./apps/system.js'), module: null },
-  settings:             { loader: () => import('./apps/settings.js'), module: null },
+  dashboard:            { loader: () => import(`./apps/dashboard.js?${CACHE_BUST}`), module: null },
+  devices:              { loader: () => import(`./apps/devices.js?${CACHE_BUST}`), module: null },
+  device_detail:        { loader: () => import(`./apps/device_detail.js?${CACHE_BUST}`), module: null },
+  device_settings_hub:  { loader: () => import(`./apps/device_settings_hub.js?${CACHE_BUST}`), module: null },
+  device_config:        { loader: () => import(`./apps/device_config.js?${CACHE_BUST}`), module: null },
+  device_permissions:   { loader: () => import(`./apps/device_permissions.js?${CACHE_BUST}`), module: null },
+  history:              { loader: () => import(`./apps/history.js?${CACHE_BUST}`), module: null },
+  lcd:                  { loader: () => import(`./apps/lcd.js?${CACHE_BUST}`), module: null },
+  permissions:          { loader: () => import(`./apps/permissions.js?${CACHE_BUST}`), module: null },
+  audit:                { loader: () => import(`./apps/audit.js?${CACHE_BUST}`), module: null },
+  system:               { loader: () => import(`./apps/system.js?${CACHE_BUST}`), module: null },
+  settings:             { loader: () => import(`./apps/settings.js?${CACHE_BUST}`), module: null },
 };
 
 class WindowManager {
@@ -315,7 +316,16 @@ class WindowManager {
       w._loaded = true;
     } catch (err) {
       console.error(`[WM] Failed to load app ${w.appId}:`, err);
-      contentEl.innerHTML = `<p class="empty-state">Error cargando ${w.title}</p>`;
+      const errMsg = err?.message || err?.toString() || 'Desconocido';
+      contentEl.innerHTML = `
+        <div class="section-title">
+          <h2>⚠️ Error cargando ${w.title}</h2>
+        </div>
+        <div class="empty-state" style="padding:20px;">
+          <p style="color:#e53e3e;margin-bottom:8px;">${errMsg}</p>
+          <p style="color:#888;font-size:12px;">Abre la consola del navegador (F12) para más detalles.</p>
+        </div>
+      `;
     }
   }
 
